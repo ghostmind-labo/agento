@@ -1,0 +1,44 @@
+{
+  "id": "aG7kQ2mXv9Lp",
+  "name": "agent",
+  "version": "0.0.1",
+  "type": "project",
+  "herdr": {
+    "workspaces": [
+      {
+        "label": "agent",
+        "tabs": [
+          {
+            "label": "dev",
+            "prefix": false,
+            "layout": "compact",
+            "compact": {
+              "type": "main-side",
+              "panes": [
+                "main",
+                {
+                  "name": "execution-shell",
+                  "description": "run ad-hoc commands here without interrupting other panes"
+                }
+              ]
+            }
+          },
+          {
+            "label": "shell",
+            "prefix": false,
+            "layout": "compact",
+            "compact": {
+              "type": "single",
+              "panes": ["shell"]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "routines": {
+    "herdr_init": "run herdr init agent --all",
+    "herdr_attach": "run herdr attach agent",
+    "herdr_terminate": "run herdr terminate agent"
+  }
+}

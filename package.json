@@ -1,0 +1,49 @@
+{
+  "name": "@ghostmind-dev/agent",
+  "version": "0.1.0",
+  "description": "The agent engine every app builds its own agent from: the tool loop and its guards, a model seam (OpenRouter + Jev), budgets with a USD cap, go/pause/stop hooks, and an append-only event log. A library, not a service.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "agent",
+    "tool-loop",
+    "llm",
+    "openrouter",
+    "jev",
+    "typesafe",
+    "mcp",
+    "agent-skills",
+    "hooks",
+    "budget"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/run.mts",
+    "pretest": "npm run build",
+    "example": "node examples/two-tools.mts",
+    "bench": "node bench/guidance.mts",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts"
+}

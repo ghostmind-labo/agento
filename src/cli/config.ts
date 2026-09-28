@@ -15,6 +15,8 @@ export const home = (): string => process.env.AGENTO_HOME || join(homedir(), '.a
 export interface Config {
   /** The default worker model (an OpenRouter id). */
   model?: string;
+  /** The default output style: minimal | normal | verbose. */
+  style?: string;
 }
 
 const file = () => join(home(), 'config.json');

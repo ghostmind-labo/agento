@@ -18,7 +18,12 @@ Or `run routine dev` in `cli/` to chat in the repo root.
 - **MCP servers:** read from `.mcp.json` in the directory (Claude Code's format), then `~/.agento/mcp.json`. They connect through `@ghostmind-dev/ensemble` as a third-party library, so OAuth servers like Potion open a browser to log in the first time. Tools whose names look like changes (`create_`, `update_`, `delete_`…) ask you first.
 - **Skills:** `.claude/skills` in the directory and in `~`. Jev picks which one a task needs.
 
-**What you see:** streamed answers, every tool call and result, every Jev checkpoint (`· Jev after_tool p=0.85 → pass [close]`), guidance level changes, nudges, and a status line per turn with its steps and cost.
+**What you see:** you choose an output style with `--style`, or `/style` in the chat, which saves it as your default:
+- **`minimal`:** just the answers. Approvals and failures still show.
+- **`normal`** (default): plus one short line per tool call, like `· read_file README.md`.
+- **`verbose`** (`-v`): plus every tool result, Jev's scoring (`· Jev after_tool p=0.85 → pass [close]`), guidance level changes, nudges, and each turn's steps and cost.
+
+Jev guides the agent in every style; only `verbose` shows its scores. `/cost` gives the session's spend anytime.
 
 **Approvals:** `y` allows once, `n` declines, `a` allows that tool for the rest of the session. `/auto` or `--yes` skips all approvals.
 

@@ -9,7 +9,7 @@ import { scriptedModel, type AgentEvent, type ApprovalRequest } from '../src/ind
 import { createSession, type Answer } from '../src/cli/session.ts';
 import { fileToolset } from '../src/cli/files.ts';
 import { shellToolset } from '../src/cli/shell.ts';
-import { printer } from '../src/cli/ui.ts';
+import { describeCall, printer, summary } from '../src/cli/ui.ts';
 
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
@@ -102,18 +102,45 @@ writeFileSync(join(root, 'notes.md'), 'TODO: write tests\n');
   ok('auto-approve');
 }
 
-// 4 · the printer shows the engine's inner life: calls, results, Jev checkpoints, levels
+// 4 · the printer: quiet by default (short calls, failures, Jev only when it acts); verbose shows everything
 {
-  let text = '';
-  const p = printer(s => (text += s), { stream: true, verbose: false });
-  p({ type: 'delta', text: 'Looking' });
-  p({ type: 'tool_call', id: '1', name: 'read_file', args: { path: 'a' } });
-  p({ type: 'tool_result', id: '1', name: 'read_file', ok: true, result: 'a (1 lines)' });
-  p({ type: 'checkpoint', at: 'after_tool', question: 'q', p: 0.2, action: 'steer', level: 'normal' });
-  p({ type: 'guidance', from: 'normal', level: 'close', reason: '2 low checkpoints in a row' });
-  const plain = text.replace(/\x1b\[\d+m/g, '');
-  assert.match(plain, /^Looking\n→ read_file \{"path":"a"\}\n {2}✓ a \(1 lines\)\n· Jev after_tool p=0\.20 → steer \[normal\]\n· guidance normal → close \(2 low checkpoints in a row\)\n$/);
-  ok('printer');
+  const events = [
+    { type: 'delta', text: 'Looking' },
+    { type: 'tool_call', id: '1', name: 'read_file', args: { path: 'README.md', limit: 60 } },
+    { type: 'tool_result', id: '1', name: 'read_file', ok: true, result: 'README.md (1 lines)' },
+    { type: 'tool_call', id: '2', name: 'run_command', args: { command: 'npm test' } },
+    { type: 'tool_result', id: '2', name: 'run_command', ok: false, result: 'Error: The person declined this change.' },
+    { type: 'checkpoint', at: 'after_tool', question: 'q', p: 0.9, action: 'pass', level: 'normal' },
+    { type: 'checkpoint', at: 'after_tool', question: 'q', p: 0.2, action: 'steer', level: 'normal' },
+    { type: 'guidance', from: 'normal', level: 'close', reason: '2 low checkpoints in a row' },
+    { type: 'delta', text: 'Done.' },
+  ] as AgentEvent[];
+  const run = (style: 'minimal' | 'normal' | 'verbose') => {
+    let text = '';
+    const p = printer(s => (text += s), { stream: true, style });
+    events.forEach(e => p(e));
+    return text.replace(/\x1b\[\d+m/g, '');
+  };
+  assert.equal(run('normal'), 'Looking\n  · read_file README.md\n  · run_command npm test\n    ✗ The person declined this change.\n\nDone.', 'normal: a line per call, failures, no Jev scoring');
+  assert.equal(run('minimal'), 'Looking\n    ✗ The person declined this change.\n\nDone.', 'minimal: answers and failures only, still on separate lines');
+  const loud = run('verbose');
+  assert.match(loud, /→ read_file \{"path":"README.md","limit":60\}\n {2}✓ README\.md \(1 lines\)/);
+  assert.match(loud, /· Jev after_tool p=0\.90 → pass \[normal\]/);
+  assert.match(loud, /· guidance normal → close/);
+  ok('printer: minimal, normal and verbose');
+}
+
+// 4b · the turn summary: silent when a turn simply finished, unless verbose
+{
+  const r = { status: 'done', reason: null, answer: 'x', steps: 2, toolCalls: 1, cost: 0.001, messages: [] } as never;
+  assert.equal(summary(r, 0.001, 'normal'), '');
+  assert.match(summary(r, 0.001, 'verbose').replace(/\x1b\[\d+m/g, ''), /done · 2 steps · 1 tool calls · \$0\.00100/);
+  const limit = { status: 'limit', reason: 'Out of steps (8).', answer: null, steps: 8, toolCalls: 8, cost: 0.01, messages: [] } as never;
+  assert.equal(summary(limit, 0.01, 'minimal').replace(/\x1b\[\d+m/g, ''), '(limit: Out of steps (8).)');
+  assert.equal(describeCall('search', { pattern: 'USD', path: 'src' }), 'search "USD" in src');
+  assert.equal(describeCall('potion', { action: 'find_notes', args: {} }), 'potion.find_notes');
+  assert.equal(describeCall('list_dir', {}), 'list_dir');
+  ok('summary + describeCall');
 }
 
 // 5 · the entry point: --help works without a key; without a key it refuses clearly

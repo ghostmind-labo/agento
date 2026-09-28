@@ -25,23 +25,57 @@ const short = (s: string, n: number) => {
   return one.length > n ? `${one.slice(0, n)}…` : one;
 };
 
+/** How much of the engine's work is shown. */
+export type Style = 'minimal' | 'normal' | 'verbose';
+export const STYLES: Style[] = ['minimal', 'normal', 'verbose'];
+export const isStyle = (s: unknown): s is Style => STYLES.includes(s as Style);
+
 export interface Printer {
   (event: AgentEvent): void;
   /** Whether text has been streamed since the last newline. */
   midLine(): boolean;
+  style: Style;
 }
 
-export function printer(write: (s: string) => void, options: { stream: boolean; verbose: boolean }): Printer {
+/** A tool call in a few words: its name and its main argument, not its JSON. */
+export function describeCall(name: string, args: Record<string, unknown>): string {
+  if (typeof args.action === 'string') return `${name}.${args.action}`;
+  const key = ['pattern', 'command', 'path', 'query', 'url', 'name', 'goal', 'id'].find(k => typeof args[k] === 'string' && args[k]);
+  let what = key ? String(args[key]) : '';
+  if (name === 'search' && typeof args.path === 'string' && key === 'pattern') what = `"${what}" in ${args.path}`;
+  else if (name === 'search' && key === 'pattern') what = `"${what}"`;
+  return what ? `${name} ${short(what, 80)}` : name;
+}
+
+/**
+ * Three styles:
+ *   minimal  the answers; approvals and failures still show (they need you or explain a gap)
+ *   normal   + one short line per tool call (the default)
+ *   verbose  + every result, every Jev checkpoint with its probability and level, level changes,
+ *            nudges, what was said to the model, and each turn's steps and cost
+ * Jev works in every style; only verbose shows its scoring.
+ */
+export function printer(write: (s: string) => void, options: { stream: boolean; style: Style }): Printer {
   let mid = false;
+  let afterTools = false;
   const line = (s: string) => {
     if (mid) write('\n');
     mid = false;
     write(`${s}\n`);
   };
+  const activity = (s: string) => {
+    line(s);
+    afterTools = true;
+  };
   const print = ((e: AgentEvent) => {
+    const v = print.style === 'verbose';
+    const calls = print.style !== 'minimal';
     switch (e.type) {
       case 'delta':
         if (options.stream) {
+          // A blank line between the tool activity and the words that follow it.
+          if (afterTools) write(mid ? '\n\n' : '\n');
+          afterTools = false;
           write(e.text);
           mid = !e.text.endsWith('\n');
         }
@@ -50,45 +84,58 @@ export function printer(write: (s: string) => void, options: { stream: boolean; 
         if (!options.stream) line(e.text);
         return;
       case 'skills':
-        if (e.names.length) line(c.cyan(`· skills picked by Jev: ${e.names.join(', ')}`));
+        if (calls && e.names.length) activity(c.dim(`  · using skill ${e.names.join(', ')}`));
         return;
       case 'opening':
-        if (e.path !== 'task') line(c.cyan(`· Jev: ${e.path} (${e.confidence.toFixed(2)})`));
+        if (v && e.path !== 'task') activity(c.cyan(`· Jev: ${e.path} (${e.confidence.toFixed(2)})`));
         return;
       case 'tool_call':
-        line(c.blue(`→ ${e.name}`) + c.dim(` ${short(JSON.stringify(e.args), 140)}`));
+        // Whatever the style, words after a tool call start on their own line.
+        afterTools = true;
+        if (v) activity(c.blue(`→ ${e.name}`) + c.dim(` ${short(JSON.stringify(e.args), 140)}`));
+        else if (calls) activity(c.dim(`  · ${describeCall(e.name, e.args)}`));
         return;
       case 'tool_result':
-        line(`  ${e.ok ? c.green('✓') : c.red('✗')} ${c.dim(short(e.result, options.verbose ? 600 : 120))}`);
+        if (v) activity(`  ${e.ok ? c.green('✓') : c.red('✗')} ${c.dim(short(e.result, 600))}`);
+        else if (!e.ok) activity(`    ${c.red('✗')} ${c.dim(short(e.result.replace(/^Error: /, ''), 110))}`);
         return;
       case 'checkpoint': {
+        if (!v) return;
         const p = e.p === null ? '—' : e.p.toFixed(2);
-        const what = e.choice ? `${e.choice} ` : '';
         const col = e.action === 'pass' || e.action === 'none' ? c.dim : c.magenta;
-        line(col(`· Jev ${e.at} ${what}p=${p} → ${e.action} [${e.level}]`));
+        activity(col(`· Jev ${e.at} ${e.choice ? `${e.choice} ` : ''}p=${p} → ${e.action} [${e.level}]`));
         return;
       }
       case 'guidance':
-        line(c.magenta(`· guidance ${e.from ?? 'start'} → ${e.level} (${e.reason})`));
+        if (v) activity(c.magenta(`· guidance ${e.from ?? 'start'} → ${e.level} (${e.reason})`));
         return;
       case 'nudge':
-        line(c.yellow(`↺ ${short(e.reason, 160)}`));
+        if (v) activity(c.yellow(`↺ ${short(e.reason, 160)}`));
         return;
       case 'hook':
-        if (e.verdict !== 'go') line(c.yellow(`· ${e.hook}: ${e.verdict}${e.reason ? ` (${e.reason})` : ''}`));
+        if (calls && e.verdict !== 'go') activity(c.yellow(`  · ${e.hook}: ${e.verdict}${e.reason ? ` (${e.reason})` : ''}`));
         return;
       case 'context':
-        if (options.verbose && e.transient) line(c.dim(`  [said to the model] ${short(String(e.message.content ?? ''), 200)}`));
+        // Only the unusual lines (steers, "answer now"), not the routine per-step reminder.
+        if (v && e.transient && !String(e.message.content ?? '').startsWith('Current request:')) activity(c.dim(`  [said to the model] ${short(String(e.message.content ?? ''), 200)}`));
         return;
       default:
         return;
     }
   }) as Printer;
   print.midLine = () => mid;
+  print.style = options.style;
   return print;
 }
 
-export function summary(r: AgentResult, total: number): string {
-  const tone = r.status === 'done' || r.status === 'greeted' || r.status === 'chatted' ? c.green : r.status === 'needs_person' || r.status === 'paused' ? c.yellow : c.red;
+/**
+ * After a turn. minimal/normal: nothing when it simply finished; the status and why when it did not.
+ * verbose: status, steps, tool calls and cost every time.
+ */
+export function summary(r: AgentResult, total: number, style: Style): string {
+  const verbose = style === 'verbose';
+  const fine = r.status === 'done' || r.status === 'greeted' || r.status === 'chatted';
+  if (!verbose) return fine ? '' : c.yellow(`(${r.status.replace('_', ' ')}${r.reason ? `: ${r.reason}` : ''})`);
+  const tone = fine ? c.green : r.status === 'needs_person' || r.status === 'paused' ? c.yellow : c.red;
   return c.dim(`${tone(r.status)} · ${r.steps} steps · ${r.toolCalls} tool calls · $${r.cost.toFixed(5)} (session $${total.toFixed(5)})${r.reason ? ` · ${r.reason}` : ''}`);
 }

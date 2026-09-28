@@ -28,7 +28,7 @@ import { connectAll, type McpConnection } from './mcp.ts';
 import { createSession, type Answer } from './session.ts';
 import { fileToolset } from './files.ts';
 import { shellToolset } from './shell.ts';
-import { c, printer, summary } from './ui.ts';
+import { c, isStyle, printer, STYLES, summary, type Style } from './ui.ts';
 
 const { values: flags, positionals } = parseArgs({
   options: {
@@ -39,6 +39,7 @@ const { values: flags, positionals } = parseArgs({
     cwd: { type: 'string' },
     yes: { type: 'boolean', short: 'y' },
     verbose: { type: 'boolean', short: 'v' },
+    style: { type: 'string', short: 's' },
     'no-mcp': { type: 'boolean' },
     'no-skills': { type: 'boolean' },
     'no-shell': { type: 'boolean' },
@@ -65,12 +66,15 @@ const HELP = `agento — the agent core in a terminal
       --max-usd <n>          USD cap per turn (default: $AGENT_MAX_USD)
       --cwd <dir>            working directory (default: here)
   -y, --yes                  approve every change and command without asking
-  -v, --verbose              longer tool results, and the transient lines said to the model
+  -s, --style <style>        output: minimal (answers) · normal (+ a line per tool call) · verbose
+                             (+ results, Jev scoring, costs). Default: saved with /style, else normal
+  -v, --verbose              same as --style verbose
       --no-mcp --no-skills --no-shell
 
 In the chat:  /model            pick from the list (↑↓, type to filter; then save as default)
               /model <id>       switch for this session     /default [id]  save as the default
               /models [filter]  /guidance [level]  /budget [usd]  /cost  /tools  /mcp  /skills
+              /style [minimal|normal|verbose]  (saved as default)
               /auto  /log  /clear  /help  /exit                               Ctrl+C stops a turn`;
 
 if (flags.help) {
@@ -230,7 +234,14 @@ if (!model) {
   process.exit(2);
 }
 
-const print = printer(out, { stream: true, verbose: !!flags.verbose });
+const styleArg = flags.verbose ? 'verbose' : flags.style;
+if (styleArg !== undefined && !isStyle(styleArg)) {
+  console.error(`--style must be one of: ${STYLES.join(', ')}`);
+  process.exit(2);
+}
+const saved = readConfig().style;
+const style: Style = (styleArg as Style | undefined) ?? (isStyle(saved) ? saved : 'normal');
+const print = printer(out, { stream: true, style });
 
 // ── tools ──
 const toolsets: Toolset[] = [fileToolset(root), ...(flags['no-shell'] ? [] : [shellToolset(root)])];
@@ -271,7 +282,8 @@ async function turn(text: string) {
   try {
     const r = await session.send(text, running.signal);
     if (print.midLine()) out('\n');
-    out(`${summary(r, session.total)}\n`);
+    const line = summary(r, session.total, print.style);
+    if (line) out(`${line}\n`);
     return r;
   } catch (error) {
     if (print.midLine()) out('\n');
@@ -290,9 +302,7 @@ if (oneShot) {
 }
 
 // ── the REPL ──
-out(`${c.bold('agento')} ${c.dim(`· ${labelOf(model)}${from === 'default' ? ' (default)' : ''} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
-const tools = toolsets.flatMap(s => s.tools.map(t => t.name));
-out(c.dim(`tools: ${tools.length} (${toolsets.map(s => `${s.name} ${s.tools.length}`).join(', ')}) · /help for commands\n`));
+out(`${c.bold('agento')} ${c.dim(`· ${labelOf(model)}${from === 'default' ? '' : ` (${from})`} · ${root.replace(homedir(), '~')} · /help`)}\n`);
 for (const m of mcp) if (!m.ok) out(c.yellow(`mcp ${m.name}: ${m.error}\n`));
 
 async function command(line: string): Promise<boolean> {
@@ -358,6 +368,20 @@ async function command(line: string): Promise<boolean> {
       session.autoApprove = !session.autoApprove;
       out(`auto-approve: ${session.autoApprove ? c.yellow('on — every change and command runs without asking') : 'off'}\n`);
       break;
+    case 'style':
+    case 'verbose': {
+      const next = cmd === 'verbose' ? (print.style === 'verbose' ? 'normal' : 'verbose') : arg;
+      if (next && !isStyle(next)) {
+        out(`styles: ${STYLES.join(', ')}\n`);
+        break;
+      }
+      if (next) {
+        print.style = next as Style;
+        writeConfig({ style: next });
+      }
+      out(`style: ${print.style}${next ? c.dim(' (saved as default)') : c.dim(` — ${STYLES.join(' · ')}`)}\n`);
+      break;
+    }
     case 'log':
       out(`${session.logPath}\n`);
       break;

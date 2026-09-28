@@ -139,11 +139,11 @@ The package ships a terminal chat on the core, in the spirit of opencode. Use it
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
-npx @ghostmind-dev/agent --models glm            # tool-capable models, cheapest first
-npx @ghostmind-dev/agent -m <model-id>           # chat in the current folder
-
-npm install -g @ghostmind-dev/agent              # or install it: the command is `agento`
-agento -m <model-id> -p "what does this repo do?"   # one turn, then exit
+npm install -g @ghostmind-dev/agent     # the command is `agento` (or: npx @ghostmind-dev/agent …)
+agento model                            # pick a model from the list, saved as the default
+agento                                  # chat in the current folder
+agento -p "what does this repo do?"     # one turn, then exit
+agento models deepseek                  # tool-capable models, cheapest first
 ```
 
 **What the agent can do:**
@@ -152,7 +152,7 @@ agento -m <model-id> -p "what does this repo do?"   # one turn, then exit
 - **MCP servers:** from `.mcp.json` (Claude Code's format). This needs `@ghostmind-dev/ensemble` installed alongside, an *optional* peer dependency, so the package keeps zero runtime dependencies.
 - **Skills:** from `.claude/skills`. Jev picks which one a task needs.
 
-It shows every tool call, Jev checkpoint and cost, and logs each session to `~/.agento/sessions/`. There's no default model on purpose: pass `-m` or set `AGENT_MODEL`. `agento --help` lists the options. In this repo, `cli/scripts/agento.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
+It shows every tool call, Jev checkpoint and cost, and logs each session to `~/.agento/sessions/`. The package names no model of its own. `agento model` saves your pick in `~/.agento/config.json`, `--model` overrides it for one run, and `AGENT_MODEL` forces one. `agento --help` lists the options. In this repo, `cli/scripts/agento.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
 
 ## Development
 

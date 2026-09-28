@@ -119,7 +119,7 @@ writeFileSync(join(root, 'notes.md'), 'TODO: write tests\n');
 // 5 · the entry point: --help works without a key; without a key it refuses clearly
 {
   const main = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'main.ts');
-  const env = { ...process.env, OPENROUTER_API_KEY: '' };
+  const env = { ...process.env, OPENROUTER_API_KEY: '', AGENTO_HOME: mkdtempSync(join(tmpdir(), 'agento-home-')) };
   const help = spawnSync(process.execPath, [main, '--help'], { encoding: 'utf8', env });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /agento — the agent core in a terminal/);
@@ -128,7 +128,7 @@ writeFileSync(join(root, 'notes.md'), 'TODO: write tests\n');
   assert.match(nokey.stderr, /OPENROUTER_API_KEY is not set/);
   const nomodel = spawnSync(process.execPath, [main, '-p', 'hi', '--no-mcp'], { encoding: 'utf8', env: { ...env, OPENROUTER_API_KEY: 'sk-test', AGENT_MODEL: '' }, input: '' });
   assert.equal(nomodel.status, 2);
-  assert.match(nomodel.stderr, /No model: pass --model/);
+  assert.match(nomodel.stderr, /No model: run `agento model` once/);
   ok('main: --help, and clear refusals without a key or a model');
 }
 

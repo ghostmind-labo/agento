@@ -9,7 +9,8 @@
  * The agent gets: files (read/list/search, and write/edit with approval), the shell (each command
  * approved), MCP servers from `.mcp.json`, and skills from `.claude/skills`. Every tool call, Jev
  * checkpoint, level change and cost is printed, and every event is logged to
- * ~/.agento/sessions/<time>.jsonl.
+ * ~/.agento/sessions/<time>.jsonl. The model is picked once from a list and saved as the default
+ * (~/.agento/config.json): `agento model`, or `/model` in the chat.
  *
  * Config is plain environment: OPENROUTER_API_KEY (required), AGENT_MODEL and AGENT_MAX_USD
  * (defaults for --model and --max-usd). In the agent repo, cli/scripts/agento.sh supplies them through
@@ -19,7 +20,8 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
-import { dirSkills, modelCatalog, openrouter, type Guidance, type Toolset } from '../index.ts';
+import { dirSkills, modelCatalog, openrouter, type Guidance, type ModelCard, type Toolset } from '../index.ts';
+import { choose, home, pickable, price, readConfig, resolveModel, writeConfig } from './config.ts';
 import { connectAll, type McpConnection } from './mcp.ts';
 import { createSession, type Answer } from './session.ts';
 import { fileToolset } from './files.ts';
@@ -39,6 +41,7 @@ const { values: flags, positionals } = parseArgs({
     'no-skills': { type: 'boolean' },
     'no-shell': { type: 'boolean' },
     models: { type: 'boolean' },
+    pick: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
   allowPositionals: true,
@@ -49,9 +52,11 @@ const HELP = `agento — the agent core in a terminal
   agento [options]           chat in the current directory
   agento -p "…" [options]    one turn, then exit
 
-  agento --models [filter]   tool-capable OpenRouter models, cheapest first
+  agento model               pick the default model from a list (saved; no flag needed after)
+  agento model <id>          set the default model directly
+  agento models [filter]     tool-capable OpenRouter models, cheapest first
 
-  -m, --model <id>           OpenRouter model (default: $AGENT_MODEL; required)
+  -m, --model <id>           OpenRouter model for this run (else $AGENT_MODEL, else the saved default)
   -g, --guidance <level>     auto | off | light | normal | close | N   (default: auto)
       --max-usd <n>          USD cap per turn (default: $AGENT_MAX_USD)
       --cwd <dir>            working directory (default: here)
@@ -59,8 +64,10 @@ const HELP = `agento — the agent core in a terminal
   -v, --verbose              longer tool results, and the transient lines said to the model
       --no-mcp --no-skills --no-shell
 
-In the chat:  /help  /model [id]  /models [filter]  /guidance [level]  /budget [usd]
-              /cost  /tools  /mcp  /skills  /auto  /log  /clear  /exit      Ctrl+C stops a turn`;
+In the chat:  /model            pick from the list (and save as default)
+              /model <id>       switch for this session     /default [id]  save as the default
+              /models [filter]  /guidance [level]  /budget [usd]  /cost  /tools  /mcp  /skills
+              /auto  /log  /clear  /help  /exit                               Ctrl+C stops a turn`;
 
 if (flags.help) {
   console.log(HELP);
@@ -68,15 +75,19 @@ if (flags.help) {
 }
 
 async function listModels(filter: string | undefined, write: (s: string) => void) {
-  const cards = (await modelCatalog()).filter(m => m.tools && (!filter || m.id.includes(filter) || m.name.toLowerCase().includes(filter.toLowerCase())));
-  cards.sort((a, b) => a.completion - b.completion);
-  for (const m of cards.slice(0, 20)) write(`${m.id.padEnd(48)} ${c.dim(`$${(m.completion * 1e6).toFixed(2)}/M out · ${Math.round(m.context / 1000)}k ctx`)}\n`);
+  const cards = pickable(await modelCatalog(), filter);
+  for (const m of cards.slice(0, 20)) write(`${m.id.padEnd(48)} ${c.dim(price(m))}\n`);
   write(c.dim(`${cards.length} tool-capable models${filter ? ` matching "${filter}"` : ''}, cheapest first\n`));
 }
 
-if (flags.models) {
-  await listModels(positionals[0], s => process.stdout.write(s));
+const [sub, subArg] = positionals;
+if (sub === 'models' || flags.models) {
+  await listModels(sub === 'models' ? subArg : sub, s => process.stdout.write(s));
   process.exit(0);
+}
+if (sub && sub !== 'model') {
+  console.error(`unknown command "${sub}" — agento --help`);
+  process.exit(2);
 }
 
 const parseGuidance = (s: string | undefined): Guidance | null => {
@@ -87,7 +98,84 @@ const parseGuidance = (s: string | undefined): Guidance | null => {
 };
 
 const root = resolve(flags.cwd ?? process.cwd());
-const model = flags.model ?? process.env.AGENT_MODEL;
+const oneShot = flags.prompt !== undefined;
+const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
+const out = (s: string) => process.stdout.write(s);
+
+/**
+ * The picker: a filter, then a numbered list from the live catalogue (tool-capable, cheapest
+ * first). Reply with a number, an exact id, or `/words` to filter again; Enter alone cancels.
+ */
+async function pickModel(current: string | undefined): Promise<string | null> {
+  let all: ModelCard[];
+  try {
+    all = await modelCatalog();
+  } catch (error) {
+    out(c.red(`could not load the model list: ${error instanceof Error ? error.message : String(error)}\n`));
+    return null;
+  }
+  const saved = readConfig().model;
+  let filter = (await rl.question(`${c.cyan('filter')} ${c.dim('(e.g. glm, claude sonnet, deepseek — Enter for all)')} › `)).trim();
+  for (;;) {
+    const shown = pickable(all, filter).slice(0, 30);
+    if (!shown.length) out(c.yellow(`no tool-capable model matches "${filter}"\n`));
+    shown.forEach((m, i) => {
+      const mark = m.id === current ? c.green(' ← current') : m.id === saved ? c.green(' ← default') : '';
+      out(`${c.dim(String(i + 1).padStart(3))}  ${m.id.padEnd(46)} ${c.dim(price(m))}${mark}\n`);
+    });
+    const total = pickable(all, filter).length;
+    if (total > shown.length) out(c.dim(`     …${total - shown.length} more: narrow with /words\n`));
+    const answer = (await rl.question(`${c.cyan('model')} ${c.dim('(number, id, /filter, Enter to cancel)')} › `)).trim();
+    if (!answer) return null;
+    if (answer.startsWith('/')) {
+      filter = answer.slice(1).trim();
+      continue;
+    }
+    const id = choose(answer, shown, all);
+    if (id) return id;
+    out(c.yellow(`"${answer}" is not a number in the list or a model id\n`));
+  }
+}
+
+/** Pick, then offer to save it as the default. */
+async function pickAndMaybeSave(current: string | undefined): Promise<string | null> {
+  const id = await pickModel(current);
+  if (!id) return null;
+  const save = (await rl.question(`save ${c.bold(id)} as the default? ${c.dim('[Y/n]')} › `)).trim().toLowerCase();
+  if (!save.startsWith('n')) {
+    writeConfig({ model: id });
+    out(c.green(`default model: ${id}`) + c.dim(` (${join(home(), 'config.json')})\n`));
+  }
+  return id;
+}
+
+// `agento model [id]`: set the default, then exit.
+if (sub === 'model') {
+  let id: string | null = subArg ?? null;
+  if (!id) {
+    if (!process.stdin.isTTY) {
+      console.error('agento model needs a terminal to pick from a list; or give the id: agento model <id>');
+      process.exit(2);
+    }
+    id = await pickModel(readConfig().model);
+  }
+  if (id) {
+    writeConfig({ model: id });
+    out(`${c.green(`default model: ${id}`)}${c.dim(` (${join(home(), 'config.json')})`)}\n`);
+  }
+  rl.close();
+  process.exit(id ? 0 : 1);
+}
+
+let { model, from } = resolveModel(flags.model, process.env.AGENT_MODEL, readConfig());
+if (flags.pick || (!model && !oneShot && process.stdin.isTTY)) {
+  if (!model) out(c.dim('No model yet: pick one (saved as the default, so you only do this once).\n'));
+  const picked = await pickAndMaybeSave(model);
+  if (picked) {
+    model = picked;
+    from = readConfig().model === picked ? 'default' : 'flag';
+  }
+}
 const guidance = parseGuidance(flags.guidance);
 if (guidance === null) {
   console.error(`--guidance must be auto, off, light, normal, close or a number`);
@@ -98,13 +186,10 @@ if (!process.env.OPENROUTER_API_KEY) {
   process.exit(2);
 }
 if (!model) {
-  console.error('No model: pass --model <id> or set AGENT_MODEL. See `agento --models` for tool-capable models, cheapest first.');
+  console.error('No model: run `agento model` once to choose a default, or pass --model <id> (or set AGENT_MODEL).');
   process.exit(2);
 }
 
-const oneShot = flags.prompt !== undefined;
-const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
-const out = (s: string) => process.stdout.write(s);
 const print = printer(out, { stream: true, verbose: !!flags.verbose });
 
 // ── tools ──
@@ -135,8 +220,8 @@ const session = createSession({
   maxUsd: Number(flags['max-usd'] ?? process.env.AGENT_MAX_USD ?? 0.5),
   ask,
   onEvent: print,
-  logPath: join(homedir(), '.agento', 'sessions', `${stamp}.jsonl`),
-  profilesPath: join(homedir(), '.agento', 'profiles.json'),
+  logPath: join(home(), 'sessions', `${stamp}.jsonl`),
+  profilesPath: join(home(), 'profiles.json'),
   autoApprove: !!flags.yes,
 });
 
@@ -177,7 +262,7 @@ if (oneShot) {
 }
 
 // ── the REPL ──
-out(`${c.bold('agento')} ${c.dim(`· ${model ?? '(no model)'} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
+out(`${c.bold('agento')} ${c.dim(`· ${model}${from === 'default' ? ' (default)' : ''} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
 const tools = toolsets.flatMap(s => s.tools.map(t => t.name));
 out(c.dim(`tools: ${tools.length} (${toolsets.map(s => `${s.name} ${s.tools.length}`).join(', ')}) · /help for commands\n`));
 for (const m of mcp) if (!m.ok) out(c.yellow(`mcp ${m.name}: ${m.error}\n`));
@@ -193,9 +278,23 @@ async function command(line: string): Promise<boolean> {
     case 'quit':
       return false;
     case 'model':
-      if (arg) session.model = arg;
-      out(`model: ${session.model}\n`);
+      if (arg) {
+        session.model = arg;
+        out(`model: ${arg} ${c.dim('(this session; /default to save it)')}\n`);
+      } else {
+        const id = await pickAndMaybeSave(session.model);
+        if (id) session.model = id;
+        out(`model: ${session.model}\n`);
+      }
       break;
+    case 'default': {
+      const id = arg || session.model;
+      if (id) {
+        writeConfig({ model: id });
+        out(c.green(`default model: ${id}\n`));
+      }
+      break;
+    }
     case 'models':
       await listModels(arg || undefined, out);
       break;

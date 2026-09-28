@@ -4,6 +4,7 @@ How to run the `agento` command **from this repo**. The command itself lives in 
 
 ```bash
 alias agento=/Volumes/Projects/labo/agent/cli/scripts/agento.sh   # once, in your shell profile
+agento model                            # once: pick the default model from a list
 agento                                  # chat in the current directory
 agento -p "what does this repo do?"     # one turn, then exit (exit 1 unless done)
 agento -m <model> -g close --max-usd 0.2 --yes --verbose
@@ -21,12 +22,14 @@ Or `run routine dev` in `cli/` to chat in the repo root.
 
 **Approvals:** `y` allows once, `n` declines, `a` allows that tool for the rest of the session. `/auto` or `--yes` skips all approvals.
 
-**Commands:** `/model [id]`, `/models [filter]` (tool-capable models, cheapest first, from the live catalogue), `/guidance [level]`, `/budget [usd]`, `/cost`, `/tools`, `/mcp`, `/skills`, `/auto`, `/log`, `/clear`, `/exit`. Ctrl+C stops a turn.
+**Model:** `agento model` opens a numbered list from the live catalogue (tool-capable, cheapest first, filter by words). The pick is saved as the default in `~/.agento/config.json`, so no flag is needed afterwards. `agento model <id>` sets it directly. In the chat, `/model` opens the same picker and `/default` saves the current one. `--model` overrides it for one run, and `AGENT_MODEL` forces one. It's empty in `.env.schema`, so the saved default applies.
+
+**Commands:** `/model [id]`, `/default [id]`, `/models [filter]`, `/guidance [level]`, `/budget [usd]`, `/cost`, `/tools`, `/mcp`, `/skills`, `/auto`, `/log`, `/clear`, `/exit`. Ctrl+C stops a turn.
 
 **What it keeps:**
 - Every event of a session goes to `~/.agento/sessions/<time>.jsonl`.
 - Per-model guide profiles go to `~/.agento/profiles.json`, so the guide learns which models need more help.
 
-**Config:** `.env.schema` through varlock. `OPENROUTER_API_KEY` comes from `ghostmind/global/openrouter`. `AGENT_MODEL` and `AGENT_MAX_USD` are defaults.
+**Config:** `.env.schema` through varlock. `OPENROUTER_API_KEY` comes from `ghostmind/global/openrouter`. `AGENT_MAX_USD` is the per-turn cap. `AGENT_MODEL` is left empty so your saved default is used.
 
 **Tests:** `run routine test` runs the `cli-*` suites (offline, $0). They sit with the package's tests in `test/`.

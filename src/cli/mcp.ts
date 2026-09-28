@@ -16,9 +16,9 @@
  * tool's name (create_, update_, delete_…) and asks approval for those. `/auto` skips all approvals.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mcpToolset, type McpLike, type Toolset } from '../index.ts';
+import { home } from './config.ts';
 
 /** The parts of ensemble's McpServerSpec this reads and writes (kept local: ensemble is optional). */
 export type McpServerSpec =
@@ -53,7 +53,7 @@ export const WRITE_VERBS = /^(create|update|delete|remove|write|set|add|edit|app
 
 export function mcpConfig(cwd: string): Record<string, McpServerSpec> {
   const out: Record<string, McpServerSpec> = {};
-  for (const file of [join(cwd, '.mcp.json'), join(homedir(), '.agento', 'mcp.json')]) {
+  for (const file of [join(cwd, '.mcp.json'), join(home(), 'mcp.json')]) {
     if (!existsSync(file)) continue;
     let servers: Record<string, ClaudeServer> = {};
     try {

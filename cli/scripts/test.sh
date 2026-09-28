@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline tests: no key, no network, $0.
+# The CLI's offline tests (they live with the package's suites): no key, no network, $0.
 set -euo pipefail
-cd "$(dirname "$0")/../app"
-for t in test/*.test.mts; do node "$t"; done
+cd "$(dirname "$0")/../.."
+node test/run.mts cli

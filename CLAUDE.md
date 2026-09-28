@@ -38,7 +38,7 @@ Every `src/*.ts` opens with a doc comment saying *why* it exists. Match that whe
 - `src/seams.ts`: `AgentTask`, `AgentResult`, `PromptPack` and its generic defaults, memory, sessions, approve, post-processors
 - `src/testing.ts`: `scriptedModel`, a stub provider that apps can use too
 - `examples/two-tools.mts`: the smallest real agent. `bench/guidance.mts`: guidance off vs close
-- `cli/`: an opencode-style REPL to test the core (files, shell, MCP via ensemble as a third-party library, skills). It imports `src/` directly through `cli/app/src/engine.ts`, is not in the npm package, and has its own `.env.schema` (varlock), `meta.json` routines and offline tests (`cli/scripts/test.sh`). A live `agent -p` spends real credits: same rule as `--live`
+- `src/cli/`: the `agent` command (package `bin`): an opencode-style REPL on the public API, with files, shell, MCP and skills. MCP loads `@ghostmind-dev/ensemble` with a dynamic `import()` only when a server is configured. Ensemble is an **optional peer**, never a dependency, and the boundary test fails on a static import of it. No default model (`--model` / `AGENT_MODEL`). `cli/` holds only the repo's way to run it: `.env.schema` (varlock, key from Vault), `meta.json` routines, and `scripts/agent.sh` running `src/cli/main.ts` from source. A live `agent -p` spends real credits, the same rule as `--live`
 
 <important if="you are changing the guide, a checkpoint question, or anything sent to Jev">
 

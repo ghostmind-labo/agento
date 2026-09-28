@@ -20,7 +20,7 @@ import {
   type ModelProvider,
   type SkillSource,
   type Toolset,
-} from './engine.ts';
+} from '../index.ts';
 
 export type Answer = 'yes' | 'no' | 'always';
 

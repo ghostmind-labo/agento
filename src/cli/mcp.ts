@@ -5,6 +5,10 @@
  * mode including OAuth logins), used here as a third-party library: the agent core speaks no MCP wire
  * protocol, it only takes a session shaped `{ name, listTools, call }`.
  *
+ * Ensemble is an OPTIONAL peer dependency, loaded only when a server is configured: the package keeps
+ * zero runtime dependencies, and files, shell and skills work without it. Without it, each server is
+ * reported with the install command.
+ *
  * Config is read from `<cwd>/.mcp.json`, then `~/.agent-cli/mcp.json` (the first definition of a name
  * wins). A server that fails to connect is reported and skipped; it never stops the CLI.
  *
@@ -14,8 +18,27 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { connect, type McpServerSpec, type McpSession } from '@ghostmind-dev/ensemble';
-import { mcpToolset, type Toolset } from './engine.ts';
+import { mcpToolset, type McpLike, type Toolset } from '../index.ts';
+
+/** The parts of ensemble's McpServerSpec this reads and writes (kept local: ensemble is optional). */
+export type McpServerSpec =
+  | { command: string; args?: string[]; env?: Record<string, string> }
+  | { url: string; transport?: 'auto' | 'streamable-http' | 'sse' | 'websocket'; headers?: Record<string, string> };
+
+type McpSession = McpLike & { close(): void };
+type Connect = (name: string, spec: McpServerSpec, options: { interactive?: boolean; prompt?: (message: string) => void }) => Promise<McpSession>;
+
+export const ENSEMBLE = '@ghostmind-dev/ensemble';
+
+/** ensemble's connect(), or null when it is not installed. */
+async function loadConnect(): Promise<Connect | null> {
+  try {
+    const mod = (await import(ENSEMBLE)) as { connect?: Connect };
+    return mod.connect ?? null;
+  } catch {
+    return null;
+  }
+}
 
 interface ClaudeServer {
   type?: 'stdio' | 'http' | 'sse' | 'ws';
@@ -58,6 +81,9 @@ export interface McpConnection {
 
 export async function connectAll(cwd: string, onLogin: (text: string) => void): Promise<McpConnection[]> {
   const specs = mcpConfig(cwd);
+  if (!Object.keys(specs).length) return [];
+  const connect = await loadConnect();
+  if (!connect) return Object.keys(specs).map(name => ({ name, ok: false, tools: 0, error: `MCP needs ${ENSEMBLE}: npm install -g ${ENSEMBLE} (or add it next to this package)` }));
   return Promise.all(
     Object.entries(specs).map(async ([name, spec]): Promise<McpConnection> => {
       try {

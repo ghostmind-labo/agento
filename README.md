@@ -13,7 +13,7 @@ It is a **library**: import it, give it tools, run it. No server, no service, no
 ```
             @ghostmind-dev/agent   (engine: loop, model + Jev, guide, budget, hooks, events)
              /                    |                        \
-   a node in ensemble      a command line (cli/)      imported by an app (Potion, later)
+   a node in ensemble      the `agent` command      imported by an app (Potion, later)
 ```
 
 **One core, three ways in.** The same engine runs inside an ensemble `work` node, behind a terminal REPL, or imported into an app. Each keeps its own tools, prompts and approvals.
@@ -133,9 +133,24 @@ The same `go | pause | stop` vocabulary as ensemble's `guard(step)`, so one supe
 
 `src/` never names an app: no app database, no app link format, no app wording in prompts. If a line of the engine would only make sense for one app, it belongs behind a seam. `test/boundary.test.mts` enforces it, along with zero runtime dependencies and no hardcoded model ids. Jev's `jev-latest` alias is the one default.
 
-## Testing it from a terminal
+## The `agent` command
 
-`cli/` is an opencode-style REPL built on the core (files, shell, MCP servers, skills, approvals, Jev checkpoints shown inline). It imports this repo's `src/` directly, so engine changes are testable immediately. It is not part of the npm package. See [`cli/Readme.md`](cli/Readme.md).
+The package ships a terminal chat on the core, in the spirit of opencode. Use it to try the engine, or as a small agent in any folder:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+npx @ghostmind-dev/agent --models glm            # tool-capable models, cheapest first
+npx @ghostmind-dev/agent -m <model-id>           # chat in the current folder
+npx @ghostmind-dev/agent -m <model-id> -p "what does this repo do?"   # one turn, then exit
+```
+
+**What the agent can do:**
+- **Files:** read, list and search freely. Writing or editing a file asks first. It can't reach outside the folder it started in.
+- **Shell:** every command asks first.
+- **MCP servers:** from `.mcp.json` (Claude Code's format). This needs `@ghostmind-dev/ensemble` installed alongside, an *optional* peer dependency, so the package keeps zero runtime dependencies.
+- **Skills:** from `.claude/skills`. Jev picks which one a task needs.
+
+It shows every tool call, Jev checkpoint and cost, and logs each session to `~/.agent-cli/sessions/`. There's no default model on purpose: pass `-m` or set `AGENT_MODEL`. `agent --help` lists the options. In this repo, `cli/scripts/agent.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
 
 ## Development
 

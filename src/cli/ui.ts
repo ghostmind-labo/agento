@@ -5,7 +5,7 @@
  * call and result, every Jev checkpoint with its probability and what the loop did, level changes,
  * nudges, and each turn's status, steps and cost.
  */
-import type { AgentEvent, AgentResult } from './engine.ts';
+import type { AgentEvent, AgentResult } from '../index.ts';
 
 const tty = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

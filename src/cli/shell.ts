@@ -6,7 +6,7 @@
  * its timeout — or the turn's Stop — is killed.
  */
 import { spawn } from 'node:child_process';
-import type { Toolset } from '../engine.ts';
+import type { Toolset } from '../index.ts';
 
 const OUT_CAP = 12_000;
 

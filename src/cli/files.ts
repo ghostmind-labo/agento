@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import type { AgentTool, Toolset } from '../engine.ts';
+import type { AgentTool, Toolset } from '../index.ts';
 
 const READ_CAP = 2000; // lines
 const SKIP = new Set(['node_modules', '.git', 'dist', '.next', '.venv', '__pycache__']);

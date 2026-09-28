@@ -5,11 +5,11 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { scriptedModel, type AgentEvent, type ApprovalRequest } from '../src/engine.ts';
-import { createSession, type Answer } from '../src/session.ts';
-import { fileToolset } from '../src/tools/files.ts';
-import { shellToolset } from '../src/tools/shell.ts';
-import { printer } from '../src/ui.ts';
+import { scriptedModel, type AgentEvent, type ApprovalRequest } from '../src/index.ts';
+import { createSession, type Answer } from '../src/cli/session.ts';
+import { fileToolset } from '../src/cli/files.ts';
+import { shellToolset } from '../src/cli/shell.ts';
+import { printer } from '../src/cli/ui.ts';
 
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
@@ -118,7 +118,7 @@ writeFileSync(join(root, 'notes.md'), 'TODO: write tests\n');
 
 // 5 · the entry point: --help works without a key; without a key it refuses clearly
 {
-  const main = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main.ts');
+  const main = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'main.ts');
   const env = { ...process.env, OPENROUTER_API_KEY: '' };
   const help = spawnSync(process.execPath, [main, '--help'], { encoding: 'utf8', env });
   assert.equal(help.status, 0);
@@ -126,7 +126,10 @@ writeFileSync(join(root, 'notes.md'), 'TODO: write tests\n');
   const nokey = spawnSync(process.execPath, [main, '-p', 'hi', '--no-mcp'], { encoding: 'utf8', env, input: '' });
   assert.equal(nokey.status, 2);
   assert.match(nokey.stderr, /OPENROUTER_API_KEY is not set/);
-  ok('main: --help, and a clear refusal without a key');
+  const nomodel = spawnSync(process.execPath, [main, '-p', 'hi', '--no-mcp'], { encoding: 'utf8', env: { ...env, OPENROUTER_API_KEY: 'sk-test', AGENT_MODEL: '' }, input: '' });
+  assert.equal(nomodel.status, 2);
+  assert.match(nomodel.stderr, /No model: pass --model/);
+  ok('main: --help, and clear refusals without a key or a model');
 }
 
 console.log(`${n} cases`);

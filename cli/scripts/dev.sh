@@ -3,4 +3,4 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$here/.."
-exec node "$here/app/src/main.ts" "$@"
+exec node "$here/../src/cli/main.ts" "$@"

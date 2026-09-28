@@ -1,6 +1,6 @@
 # agent CLI
 
-A terminal REPL to test the agent core, in the spirit of opencode. It imports the core from this repo's `src/` (through `app/src/engine.ts`), so an engine change is testable the moment it's saved: no build, no publish.
+How to run the `agent` command **from this repo**. The command itself lives in `src/cli/` and ships in the npm package (`npx @ghostmind-dev/agent`). This folder only adds the local setup: the key from Vault through varlock, and running from source, so an engine change is testable the moment it's saved, with no build and no publish.
 
 ```bash
 alias agent=/Volumes/Projects/labo/agent/cli/scripts/agent.sh   # once, in your shell profile
@@ -29,4 +29,4 @@ Or `run routine dev` in `cli/` to chat in the repo root.
 
 **Config:** `.env.schema` through varlock. `OPENROUTER_API_KEY` comes from `ghostmind/global/openrouter`. `AGENT_MODEL` and `AGENT_MAX_USD` are defaults.
 
-**Tests:** `run routine test` (offline, $0).
+**Tests:** `run routine test` runs the `cli-*` suites (offline, $0). They sit with the package's tests in `test/`.

@@ -1,9 +1,12 @@
 {
   "name": "@ghostmind-dev/agent",
-  "version": "0.1.0",
-  "description": "The agent engine every app builds its own agent from: the tool loop and its guards, a model seam (OpenRouter + Jev), budgets with a USD cap, go/pause/stop hooks, and an append-only event log. A library, not a service.",
+  "version": "0.2.0",
+  "description": "The agent engine every app builds its own agent from: the tool loop and its guards, a model seam (OpenRouter + Jev), the Jev guide, budgets with a USD cap, go/pause/stop hooks, and an append-only event log. A library, plus an `agent` command line to try it.",
   "type": "module",
   "license": "MIT",
+  "bin": {
+    "agent": "dist/cli/main.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -26,7 +29,8 @@
     "mcp",
     "agent-skills",
     "hooks",
-    "budget"
+    "budget",
+    "cli"
   ],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
@@ -37,8 +41,8 @@
     "bench": "node bench/guidance.mts",
     "prepublishOnly": "npm run typecheck && npm test"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@ghostmind-dev/ensemble": "^0.31.0",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
   },
@@ -46,5 +50,13 @@
     "node": ">=22.18.0"
   },
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts"
+  "types": "./dist/index.d.ts",
+  "peerDependencies": {
+    "@ghostmind-dev/ensemble": ">=0.31.0"
+  },
+  "peerDependenciesMeta": {
+    "@ghostmind-dev/ensemble": {
+      "optional": true
+    }
+  }
 }

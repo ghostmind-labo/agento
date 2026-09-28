@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * `agent` — a terminal REPL to test the agent core, in the spirit of opencode.
  *
@@ -8,20 +9,24 @@
  * The agent gets: files (read/list/search, and write/edit with approval), the shell (each command
  * approved), MCP servers from `.mcp.json`, and skills from `.claude/skills`. Every tool call, Jev
  * checkpoint, level change and cost is printed, and every event is logged to
- * ~/.agent-cli/sessions/<time>.jsonl. OPENROUTER_API_KEY and defaults come from varlock (cli/.env.schema).
+ * ~/.agent-cli/sessions/<time>.jsonl.
+ *
+ * Config is plain environment: OPENROUTER_API_KEY (required), AGENT_MODEL and AGENT_MAX_USD
+ * (defaults for --model and --max-usd). In the agent repo, cli/scripts/agent.sh supplies them through
+ * varlock. There is no default model on purpose: pick one with --model (see `agent --models`).
  */
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
-import { dirSkills, modelCatalog, openrouter, type Guidance, type Toolset } from './engine.ts';
+import { dirSkills, modelCatalog, openrouter, type Guidance, type Toolset } from '../index.ts';
 import { connectAll, type McpConnection } from './mcp.ts';
 import { createSession, type Answer } from './session.ts';
-import { fileToolset } from './tools/files.ts';
-import { shellToolset } from './tools/shell.ts';
+import { fileToolset } from './files.ts';
+import { shellToolset } from './shell.ts';
 import { c, printer, summary } from './ui.ts';
 
-const { values: flags } = parseArgs({
+const { values: flags, positionals } = parseArgs({
   options: {
     prompt: { type: 'string', short: 'p' },
     model: { type: 'string', short: 'm' },
@@ -33,8 +38,10 @@ const { values: flags } = parseArgs({
     'no-mcp': { type: 'boolean' },
     'no-skills': { type: 'boolean' },
     'no-shell': { type: 'boolean' },
+    models: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
+  allowPositionals: true,
 });
 
 const HELP = `agent — test the agent core from a terminal
@@ -42,7 +49,9 @@ const HELP = `agent — test the agent core from a terminal
   agent [options]            chat in the current directory
   agent -p "…" [options]     one turn, then exit
 
-  -m, --model <id>           OpenRouter model (default: $AGENT_MODEL)
+  agent --models [filter]    tool-capable OpenRouter models, cheapest first
+
+  -m, --model <id>           OpenRouter model (default: $AGENT_MODEL; required)
   -g, --guidance <level>     auto | off | light | normal | close | N   (default: auto)
       --max-usd <n>          USD cap per turn (default: $AGENT_MAX_USD)
       --cwd <dir>            working directory (default: here)
@@ -55,6 +64,18 @@ In the chat:  /help  /model [id]  /models [filter]  /guidance [level]  /budget [
 
 if (flags.help) {
   console.log(HELP);
+  process.exit(0);
+}
+
+async function listModels(filter: string | undefined, write: (s: string) => void) {
+  const cards = (await modelCatalog()).filter(m => m.tools && (!filter || m.id.includes(filter) || m.name.toLowerCase().includes(filter.toLowerCase())));
+  cards.sort((a, b) => a.completion - b.completion);
+  for (const m of cards.slice(0, 20)) write(`${m.id.padEnd(48)} ${c.dim(`$${(m.completion * 1e6).toFixed(2)}/M out · ${Math.round(m.context / 1000)}k ctx`)}\n`);
+  write(c.dim(`${cards.length} tool-capable models${filter ? ` matching "${filter}"` : ''}, cheapest first\n`));
+}
+
+if (flags.models) {
+  await listModels(positionals[0], s => process.stdout.write(s));
   process.exit(0);
 }
 
@@ -73,7 +94,11 @@ if (guidance === null) {
   process.exit(2);
 }
 if (!process.env.OPENROUTER_API_KEY) {
-  console.error('OPENROUTER_API_KEY is not set. Run through varlock: cli/scripts/agent.sh (or `run routine dev` in cli/).');
+  console.error('OPENROUTER_API_KEY is not set. Export it, or in the agent repo run cli/scripts/agent.sh (varlock).');
+  process.exit(2);
+}
+if (!model) {
+  console.error('No model: pass --model <id> or set AGENT_MODEL. See `agent --models` for tool-capable models, cheapest first.');
   process.exit(2);
 }
 
@@ -171,13 +196,9 @@ async function command(line: string): Promise<boolean> {
       if (arg) session.model = arg;
       out(`model: ${session.model}\n`);
       break;
-    case 'models': {
-      const cards = (await modelCatalog()).filter(m => m.tools && (!arg || m.id.includes(arg) || m.name.toLowerCase().includes(arg.toLowerCase())));
-      cards.sort((a, b) => a.completion - b.completion);
-      for (const m of cards.slice(0, 20)) out(`${m.id.padEnd(48)} ${c.dim(`$${(m.completion * 1e6).toFixed(2)}/M out · ${Math.round(m.context / 1000)}k ctx`)}\n`);
-      out(c.dim(`${cards.length} tool-capable models${arg ? ` matching "${arg}"` : ''}, cheapest first\n`));
+    case 'models':
+      await listModels(arg || undefined, out);
       break;
-    }
     case 'guidance': {
       const g = parseGuidance(arg || undefined);
       if (arg && g === null) out('auto | off | light | normal | close | N\n');

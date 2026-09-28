@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createInterface, type Interface } from 'node:readline/promises';
-import { dirSkills, modelCatalog, openrouter, type Guidance, type ModelCard, type Toolset } from '../index.ts';
+import { dirSkills, ModelError, modelCatalog, openrouter, type Guidance, type ModelCard, type Toolset } from '../index.ts';
 import { home, pickable, price, readConfig, resolveModel, writeConfig } from './config.ts';
 import { capable, labelOf, offered } from './models.ts';
 import { pick, type Item } from './picker.ts';
@@ -287,7 +287,10 @@ async function turn(text: string) {
     return r;
   } catch (error) {
     print.flush();
-    out(`${c.red('error')} ${error instanceof Error ? error.message : String(error)}\n`);
+    if (error instanceof ModelError && error.code === 'rate_limited') {
+      out(`${c.yellow(`${labelOf(session.model ?? '')} is rate-limited by its provider right now`)} ${c.dim('(retried 3 times). Try again in a moment, or /model to switch.')}\n`);
+      if (print.style === 'verbose') out(c.dim(`${error.message}\n`));
+    } else out(`${c.red('error')} ${error instanceof Error ? error.message : String(error)}\n`);
     return null;
   } finally {
     running = null;

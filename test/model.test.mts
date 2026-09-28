@@ -98,4 +98,40 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
   ok('catalogue + card');
 }
 
+// 6 · passing failures are retried: a 429, a provider relaying a rate limit, a stream that fails before any text
+{
+  const limited = { error: { message: 'Provider returned error', code: 429, metadata: { provider_name: 'Alibaba', raw: 'qwen/x is temporarily rate-limited upstream' } } };
+  let calls = 0;
+  const ok200 = () => json({ model: 'm', choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }], usage: { cost: 0.001 } });
+  let m = mock(() => (++calls < 3 ? json(limited, 429) : ok200()));
+  const r = await openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch, retryDelayMs: 1 }).chat({ messages: [] });
+  assert.equal(r.message.content, 'hi');
+  assert.equal(calls, 3, 'two 429s, then an answer');
+
+  calls = 0;
+  m = mock(() => (++calls < 2 ? json(limited, 200) : ok200())); // an error body on a 200
+  assert.equal((await openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch, retryDelayMs: 1 }).chat({ messages: [] })).message.content, 'hi');
+
+  calls = 0;
+  const good = [`data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}`, 'data: [DONE]'].join('\n');
+  m = mock(() => new Response(++calls < 2 ? `data: ${JSON.stringify(limited)}\n` : good));
+  const deltas: string[] = [];
+  const sr = await openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch, retryDelayMs: 1 }).chat({ messages: [], onDelta: d => deltas.push(d) });
+  assert.equal(sr.message.content, 'ok');
+  assert.deepEqual(deltas, ['ok'], 'nothing was shown twice');
+
+  calls = 0;
+  m = mock(() => (++calls, json(limited, 429)));
+  const err = await openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch, retries: 2, retryDelayMs: 1 }).chat({ messages: [] }).catch((e: unknown) => e);
+  assert.ok(err instanceof ModelError && err.code === 'rate_limited');
+  assert.match((err as Error).message, /\[Alibaba\]: qwen\/x is temporarily rate-limited upstream \(after 2 retries\)$/);
+  assert.equal(calls, 3);
+
+  calls = 0;
+  m = mock(() => (++calls, json({ error: { message: 'bad request' } }, 400)));
+  await openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch, retryDelayMs: 1 }).chat({ messages: [] }).catch(() => {});
+  assert.equal(calls, 1, 'a 400 is not retried');
+  ok('retries: 429, error-on-200, stream before text; gives up with rate_limited; 400 not retried');
+}
+
 console.log(`${n} cases`);

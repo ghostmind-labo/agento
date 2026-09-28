@@ -112,17 +112,23 @@ export interface ModelProvider {
   card?(model: string, signal?: AbortSignal): Promise<ModelCard | null>;
 }
 
-export type ModelErrorCode = 'no_key' | 'no_model' | 'credits' | 'auth' | 'failed' | 'no_answer';
+export type ModelErrorCode = 'no_key' | 'no_model' | 'credits' | 'auth' | 'rate_limited' | 'failed' | 'no_answer';
 
 /** Every failure of a model call. `code` is what an app maps to its own message or HTTP status. */
 export class ModelError extends Error {
   readonly code: ModelErrorCode;
   readonly status?: number;
-  constructor(code: ModelErrorCode, message: string, options: { status?: number; cause?: unknown } = {}) {
+  /** A passing failure (a rate limit, a provider hiccup): worth trying again. */
+  readonly retryable: boolean;
+  /** How long the provider asked us to wait, when it said. */
+  readonly retryAfterMs?: number;
+  constructor(code: ModelErrorCode, message: string, options: { status?: number; cause?: unknown; retryable?: boolean; retryAfterMs?: number } = {}) {
     super(message, { cause: options.cause });
     this.name = 'ModelError';
     this.code = code;
     this.status = options.status;
+    this.retryable = options.retryable ?? false;
+    this.retryAfterMs = options.retryAfterMs;
   }
 }
 
@@ -139,6 +145,10 @@ export interface OpenRouterConfig {
   decisionModel?: string;
   /** Extra headers, e.g. OpenRouter's `HTTP-Referer` / `X-Title` app attribution. */
   headers?: Record<string, string>;
+  /** Retries for rate limits and passing provider errors (408, 429, 5xx). Default 3. */
+  retries?: number;
+  /** The first backoff; it doubles each try (capped at 8 s) unless the provider sends Retry-After. Default 600 ms. */
+  retryDelayMs?: number;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -149,21 +159,88 @@ interface StreamChunk {
     finish_reason?: string | null;
   }[];
   usage?: { cost?: number };
-  error?: { message?: string };
+  error?: OpenRouterErrorBody;
+}
+
+interface OpenRouterErrorBody {
+  message?: string;
+  code?: number | string;
+  metadata?: { raw?: unknown; provider_name?: string; reasons?: string[] };
+}
+
+/** OpenRouter's message plus what it relays from the provider ("Provider returned error" alone says nothing). */
+export function describeError(e: OpenRouterErrorBody | undefined, fallback: string): string {
+  if (!e) return fallback;
+  const raw = e.metadata?.raw;
+  const detail = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : e.metadata?.reasons?.join('; ');
+  const who = e.metadata?.provider_name ? ` [${e.metadata.provider_name}]` : '';
+  return `${e.message ?? fallback}${who}${detail ? `: ${detail.slice(0, 600)}` : ''}`;
+}
+
+const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
+const RATE_LIMITED = /rate[- ]?limit|too many requests|temporarily|overloaded|capacity/i;
+
+/** A failure worth trying again: a retryable status, or a provider relaying a rate limit / overload. */
+const passing = (status: number | undefined, e: OpenRouterErrorBody | undefined) =>
+  (status !== undefined && RETRYABLE.has(status)) || RETRYABLE.has(Number(e?.code)) || RATE_LIMITED.test(describeError(e, ''));
+
+function transientError(status: number | undefined, e: OpenRouterErrorBody | undefined, retryAfter: string | null, fallback: string): ModelError | null {
+  if (!passing(status, e)) return null;
+  const message = describeError(e, fallback);
+  const limited = status === 429 || Number(e?.code) === 429 || RATE_LIMITED.test(message);
+  const seconds = retryAfter ? Number(retryAfter) : NaN;
+  return new ModelError(limited ? 'rate_limited' : 'failed', `The model call failed: ${message}`, {
+    status,
+    retryable: true,
+    retryAfterMs: Number.isFinite(seconds) ? seconds * 1000 : undefined,
+  });
 }
 
 async function refusal(res: Response): Promise<ModelError> {
-  const json = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
-  const message = json?.error?.message ?? `OpenRouter answered ${res.status}`;
+  const json = (await res.json().catch(() => null)) as { error?: OpenRouterErrorBody } | null;
+  const passingError = transientError(res.status, json?.error, res.headers.get('retry-after'), `OpenRouter answered ${res.status}`);
+  if (passingError) return passingError;
+  const message = describeError(json?.error, `OpenRouter answered ${res.status}`);
   if (res.status === 402) return new ModelError('credits', `The OpenRouter credits ran out. (${message})`, { status: 402 });
   if (res.status === 401 || res.status === 403) return new ModelError('auth', `OpenRouter refused the key. (${message})`, { status: res.status });
   return new ModelError('failed', `The model call failed: ${message}`, { status: res.status });
+}
+
+/** Waits, but gives up at once when the caller aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+    signal?.addEventListener('abort', done, { once: true });
+  });
 }
 
 export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
   const base = (config.baseUrl ?? process.env.OPENROUTER_BASE_URL ?? OPENROUTER_URL).replace(/\/+$/, '');
   const doFetch = config.fetch ?? globalThis.fetch;
   const decisionModel = config.decisionModel ?? DEFAULT_DECISION_MODEL;
+  const retries = config.retries ?? 3;
+  const baseDelay = config.retryDelayMs ?? 600;
+
+  /** Try again on a passing failure, backing off; never after the caller aborted. */
+  const withRetry = async <T>(attempt: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    for (let n = 0; ; n++) {
+      try {
+        return await attempt();
+      } catch (error) {
+        if (!(error instanceof ModelError) || !error.retryable || signal?.aborted) throw error;
+        if (n >= retries) {
+          throw new ModelError(error.code, `${error.message} (after ${retries} ${retries === 1 ? 'retry' : 'retries'})`, { status: error.status, cause: error });
+        }
+        await sleep(error.retryAfterMs ?? Math.min(baseDelay * 2 ** n, 8000), signal);
+      }
+    }
+  };
 
   const headers = () => {
     const key = config.apiKey ?? process.env.OPENROUTER_API_KEY;
@@ -171,16 +248,23 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
     return { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...config.headers };
   };
 
-  const post = async <T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> => {
-    const res = await doFetch(`${base}${path}`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal });
-    if (!res.ok) throw await refusal(res);
-    const json = (await res.json().catch(() => null)) as (T & { error?: { message?: string } }) | null;
-    if (!json || json.error) throw new ModelError('failed', `The model call failed: ${json?.error?.message ?? 'no answer'}`);
-    return json;
-  };
+  const post = <T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> =>
+    withRetry(async () => {
+      const res = await doFetch(`${base}${path}`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal });
+      if (!res.ok) throw await refusal(res);
+      const json = (await res.json().catch(() => null)) as (T & { error?: OpenRouterErrorBody }) | null;
+      if (!json || json.error) {
+        throw transientError(undefined, json?.error, null, 'no answer') ?? new ModelError('failed', `The model call failed: ${describeError(json?.error, 'no answer')}`);
+      }
+      return json;
+    }, signal);
 
   /** Reads server-sent events into one reply, handing each piece of text to onDelta. */
-  const stream = async (body: Record<string, unknown>, onDelta: (text: string) => void, signal?: AbortSignal): Promise<ChatReply> => {
+  const stream = (body: Record<string, unknown>, onDelta: (text: string) => void, signal?: AbortSignal): Promise<ChatReply> =>
+    withRetry(() => streamOnce(body, onDelta, signal), signal);
+
+  /** One streamed attempt. A failure is retryable only until the first text or call arrives. */
+  const streamOnce = async (body: Record<string, unknown>, onDelta: (text: string) => void, signal?: AbortSignal): Promise<ChatReply> => {
     const res = await doFetch(`${base}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify({ ...body, stream: true }), signal });
     if (!res.ok || !res.body) throw await refusal(res);
 
@@ -199,7 +283,10 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
       const data = line.slice(5).trim();
       if (!data || data === '[DONE]') return;
       const chunk = JSON.parse(data) as StreamChunk;
-      if (chunk.error) throw new ModelError('failed', `The model call failed: ${chunk.error.message ?? 'stream error'}`);
+      if (chunk.error) {
+        const again = !content && !calls.length ? transientError(undefined, chunk.error, null, 'stream error') : null;
+        throw again ?? new ModelError('failed', `The model call failed: ${describeError(chunk.error, 'stream error')}`);
+      }
       if (chunk.model) model = chunk.model;
       if (chunk.usage?.cost !== undefined) cost = chunk.usage.cost;
       const choice = chunk.choices?.[0];

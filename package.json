@@ -1,6 +1,6 @@
 {
   "name": "@ghostmind-dev/agent",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "The agent engine every app builds its own agent from: the tool loop and its guards, a model seam (OpenRouter + Jev), the Jev guide, budgets with a USD cap, go/pause/stop hooks, and an append-only event log. A library, plus the `agento` command line to try it.",
   "type": "module",
   "license": "MIT",

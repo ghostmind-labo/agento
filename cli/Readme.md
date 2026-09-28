@@ -23,7 +23,7 @@ Or `run routine dev` in `cli/` to chat in the repo root.
 - **`normal`** (default): plus one short line per tool call, like `· read_file README.md`.
 - **`verbose`** (`-v`): plus every tool result, Jev's scoring (`· Jev after_tool p=0.85 → pass [close]`), guidance level changes, nudges, and each turn's steps and cost.
 
-Jev guides the agent in every style; only `verbose` shows its scores. `/cost` gives the session's spend anytime.
+Answers render as markdown, as they stream: box-drawn tables fitted to your terminal (cells wrap), headings, **bold**, `code`, lists, quotes and code blocks. `NO_COLOR` or piped output keeps the layout without the colours. Jev guides the agent in every style; only `verbose` shows its scores. `/cost` gives the session's spend anytime.
 
 **Approvals:** `y` allows once, `n` declines, `a` allows that tool for the rest of the session. `/auto` or `--yes` skips all approvals.
 

@@ -255,7 +255,7 @@ const skills = flags['no-skills'] ? undefined : dirSkills(join(root, '.claude', 
 // ── approvals ──
 const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {
   if (!process.stdin.isTTY) return 'no';
-  if (print.midLine()) out('\n');
+  print.flush();
   const a = (await reader().question(`${c.yellow('?')} ${c.bold(req.summary)}\n  ${c.dim('allow? [y]es / [n]o / [a]lways for')} ${req.tool} ${c.dim('›')} `)).trim().toLowerCase();
   return a.startsWith('a') ? 'always' : a.startsWith('y') ? 'yes' : 'no';
 };
@@ -281,12 +281,12 @@ async function turn(text: string) {
   running = new AbortController();
   try {
     const r = await session.send(text, running.signal);
-    if (print.midLine()) out('\n');
+    print.flush();
     const line = summary(r, session.total, print.style);
     if (line) out(`${line}\n`);
     return r;
   } catch (error) {
-    if (print.midLine()) out('\n');
+    print.flush();
     out(`${c.red('error')} ${error instanceof Error ? error.message : String(error)}\n`);
     return null;
   } finally {

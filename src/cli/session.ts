@@ -47,6 +47,7 @@ const SYSTEM_EXTRA = (root: string) => [
   'Look before you answer: list, search and read files instead of guessing what they contain. Quote paths and line numbers you actually read.',
   'To change a file, read it first, then use edit_file with an exact passage (or write_file for a new file). Every change and every shell command waits for the person\'s approval.',
   'Keep answers short and concrete. Say what you changed, and what you could not do.',
+  'Your answer is shown as markdown in a terminal: use a table when you list items with several fields, `code` for paths and commands, and short lists; no HTML.',
 ];
 
 export function createSession(o: SessionOptions) {

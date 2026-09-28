@@ -6,6 +6,7 @@
  * nudges, and each turn's status, steps and cost.
  */
 import type { AgentEvent, AgentResult } from '../index.ts';
+import { markdownStream, renderMarkdown } from './markdown.ts';
 
 const tty = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -32,8 +33,8 @@ export const isStyle = (s: unknown): s is Style => STYLES.includes(s as Style);
 
 export interface Printer {
   (event: AgentEvent): void;
-  /** Whether text has been streamed since the last newline. */
-  midLine(): boolean;
+  /** Render whatever text is held back (before a prompt, or at the end of a turn). */
+  flush(): void;
   style: Style;
 }
 
@@ -55,12 +56,14 @@ export function describeCall(name: string, args: Record<string, unknown>): strin
  *            nudges, what was said to the model, and each turn's steps and cost
  * Jev works in every style; only verbose shows its scoring.
  */
-export function printer(write: (s: string) => void, options: { stream: boolean; style: Style }): Printer {
-  let mid = false;
+export function printer(write: (s: string) => void, options: { stream: boolean; style: Style; color?: boolean; width?: () => number }): Printer {
+  const color = options.color ?? tty;
+  const width = options.width ?? (() => Math.max(40, (process.stdout.columns ?? 100) - 1));
+  // The answer is markdown: rendered line by line as it streams (tables once complete).
+  const md = markdownStream(write, { color, width });
   let afterTools = false;
   const line = (s: string) => {
-    if (mid) write('\n');
-    mid = false;
+    md.flush();
     write(`${s}\n`);
   };
   const activity = (s: string) => {
@@ -74,14 +77,21 @@ export function printer(write: (s: string) => void, options: { stream: boolean; 
       case 'delta':
         if (options.stream) {
           // A blank line between the tool activity and the words that follow it.
-          if (afterTools) write(mid ? '\n\n' : '\n');
+          if (afterTools) {
+            md.flush();
+            write('\n');
+          }
           afterTools = false;
-          write(e.text);
-          mid = !e.text.endsWith('\n');
+          md.push(e.text);
         }
         return;
       case 'message':
-        if (!options.stream) line(e.text);
+        // The model's words are complete: render what the stream still holds (or all of it).
+        if (options.stream) md.flush();
+        else write(renderMarkdown(e.text, { color, width: width() }));
+        return;
+      case 'finished':
+        md.flush();
         return;
       case 'skills':
         if (calls && e.names.length) activity(c.dim(`  · using skill ${e.names.join(', ')}`));
@@ -123,7 +133,7 @@ export function printer(write: (s: string) => void, options: { stream: boolean; 
         return;
     }
   }) as Printer;
-  print.midLine = () => mid;
+  print.flush = () => md.flush();
   print.style = options.style;
   return print;
 }

@@ -9,7 +9,7 @@
  * zero runtime dependencies, and files, shell and skills work without it. Without it, each server is
  * reported with the install command.
  *
- * Config is read from `<cwd>/.mcp.json`, then `~/.agent-cli/mcp.json` (the first definition of a name
+ * Config is read from `<cwd>/.mcp.json`, then `~/.agento/mcp.json` (the first definition of a name
  * wins). A server that fails to connect is reported and skipped; it never stops the CLI.
  *
  * Which MCP calls are CHANGES is not something servers say reliably, so the CLI guesses from the
@@ -53,7 +53,7 @@ export const WRITE_VERBS = /^(create|update|delete|remove|write|set|add|edit|app
 
 export function mcpConfig(cwd: string): Record<string, McpServerSpec> {
   const out: Record<string, McpServerSpec> = {};
-  for (const file of [join(cwd, '.mcp.json'), join(homedir(), '.agent-cli', 'mcp.json')]) {
+  for (const file of [join(cwd, '.mcp.json'), join(homedir(), '.agento', 'mcp.json')]) {
     if (!existsSync(file)) continue;
     let servers: Record<string, ClaudeServer> = {};
     try {

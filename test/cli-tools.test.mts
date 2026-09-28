@@ -9,7 +9,7 @@ import { mcpConfig, WRITE_VERBS } from '../src/cli/mcp.ts';
 
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
-const root = mkdtempSync(join(tmpdir(), 'agent-cli-'));
+const root = mkdtempSync(join(tmpdir(), 'agento-'));
 mkdirSync(join(root, 'src'));
 writeFileSync(join(root, 'src', 'a.ts'), 'const x = 1;\nconst y = 2;\nconst x2 = 1;\n');
 const ctx = { signal: new AbortController().signal, spend: () => {}, callId: 'c' };

@@ -13,7 +13,7 @@ import { printer } from '../src/cli/ui.ts';
 
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
-const root = mkdtempSync(join(tmpdir(), 'agent-cli-s-'));
+const root = mkdtempSync(join(tmpdir(), 'agento-s-'));
 writeFileSync(join(root, 'notes.md'), 'TODO: write tests\n');
 
 // 1 · a two-turn conversation: read, edit (approved with "always"), then a follow-up that remembers
@@ -122,7 +122,7 @@ writeFileSync(join(root, 'notes.md'), 'TODO: write tests\n');
   const env = { ...process.env, OPENROUTER_API_KEY: '' };
   const help = spawnSync(process.execPath, [main, '--help'], { encoding: 'utf8', env });
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /agent — test the agent core from a terminal/);
+  assert.match(help.stdout, /agento — the agent core in a terminal/);
   const nokey = spawnSync(process.execPath, [main, '-p', 'hi', '--no-mcp'], { encoding: 'utf8', env, input: '' });
   assert.equal(nokey.status, 2);
   assert.match(nokey.stderr, /OPENROUTER_API_KEY is not set/);

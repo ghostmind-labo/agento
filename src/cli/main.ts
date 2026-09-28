@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * `agent` — a terminal REPL to test the agent core, in the spirit of opencode.
+ * `agento` — a terminal REPL on the agent core, in the spirit of opencode.
  *
- *   agent                                   chat in the current directory
- *   agent -p "what does this repo do?"      one turn, then exit (exit code 1 unless done)
- *   agent --model <id> --guidance close --max-usd 0.2 --yes --verbose
+ *   agento                                  chat in the current directory
+ *   agento -p "what does this repo do?"     one turn, then exit (exit code 1 unless done)
+ *   agento --model <id> --guidance close --max-usd 0.2 --yes --verbose
  *
  * The agent gets: files (read/list/search, and write/edit with approval), the shell (each command
  * approved), MCP servers from `.mcp.json`, and skills from `.claude/skills`. Every tool call, Jev
  * checkpoint, level change and cost is printed, and every event is logged to
- * ~/.agent-cli/sessions/<time>.jsonl.
+ * ~/.agento/sessions/<time>.jsonl.
  *
  * Config is plain environment: OPENROUTER_API_KEY (required), AGENT_MODEL and AGENT_MAX_USD
  * (defaults for --model and --max-usd). In the agent repo, cli/scripts/agent.sh supplies them through
- * varlock. There is no default model on purpose: pick one with --model (see `agent --models`).
+ * varlock. There is no default model on purpose: pick one with --model (see `agento --models`).
  */
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -44,12 +44,12 @@ const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
 });
 
-const HELP = `agent — test the agent core from a terminal
+const HELP = `agento — the agent core in a terminal
 
-  agent [options]            chat in the current directory
-  agent -p "…" [options]     one turn, then exit
+  agento [options]           chat in the current directory
+  agento -p "…" [options]    one turn, then exit
 
-  agent --models [filter]    tool-capable OpenRouter models, cheapest first
+  agento --models [filter]   tool-capable OpenRouter models, cheapest first
 
   -m, --model <id>           OpenRouter model (default: $AGENT_MODEL; required)
   -g, --guidance <level>     auto | off | light | normal | close | N   (default: auto)
@@ -94,11 +94,11 @@ if (guidance === null) {
   process.exit(2);
 }
 if (!process.env.OPENROUTER_API_KEY) {
-  console.error('OPENROUTER_API_KEY is not set. Export it, or in the agent repo run cli/scripts/agent.sh (varlock).');
+  console.error('OPENROUTER_API_KEY is not set. Export it, or in the agent repo run cli/scripts/agento.sh (varlock).');
   process.exit(2);
 }
 if (!model) {
-  console.error('No model: pass --model <id> or set AGENT_MODEL. See `agent --models` for tool-capable models, cheapest first.');
+  console.error('No model: pass --model <id> or set AGENT_MODEL. See `agento --models` for tool-capable models, cheapest first.');
   process.exit(2);
 }
 
@@ -126,7 +126,7 @@ const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const session = createSession({
-  provider: openrouter({ model, headers: { 'X-Title': 'agent-cli' } }),
+  provider: openrouter({ model, headers: { 'X-Title': 'agento' } }),
   model,
   root,
   toolsets,
@@ -135,8 +135,8 @@ const session = createSession({
   maxUsd: Number(flags['max-usd'] ?? process.env.AGENT_MAX_USD ?? 0.5),
   ask,
   onEvent: print,
-  logPath: join(homedir(), '.agent-cli', 'sessions', `${stamp}.jsonl`),
-  profilesPath: join(homedir(), '.agent-cli', 'profiles.json'),
+  logPath: join(homedir(), '.agento', 'sessions', `${stamp}.jsonl`),
+  profilesPath: join(homedir(), '.agento', 'profiles.json'),
   autoApprove: !!flags.yes,
 });
 
@@ -177,7 +177,7 @@ if (oneShot) {
 }
 
 // ── the REPL ──
-out(`${c.bold('agent')} ${c.dim(`· ${model ?? '(no model)'} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
+out(`${c.bold('agento')} ${c.dim(`· ${model ?? '(no model)'} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
 const tools = toolsets.flatMap(s => s.tools.map(t => t.name));
 out(c.dim(`tools: ${tools.length} (${toolsets.map(s => `${s.name} ${s.tools.length}`).join(', ')}) · /help for commands\n`));
 for (const m of mcp) if (!m.ok) out(c.yellow(`mcp ${m.name}: ${m.error}\n`));
@@ -218,7 +218,7 @@ async function command(line: string): Promise<boolean> {
       out(c.dim('* asks approval\n'));
       break;
     case 'mcp':
-      if (!mcp.length) out('no MCP servers (add them to .mcp.json or ~/.agent-cli/mcp.json)\n');
+      if (!mcp.length) out('no MCP servers (add them to .mcp.json or ~/.agento/mcp.json)\n');
       for (const m of mcp) out(`${m.name}: ${m.ok ? c.green(`${m.tools} tools`) : c.red(m.error ?? 'failed')}\n`);
       break;
     case 'skills': {

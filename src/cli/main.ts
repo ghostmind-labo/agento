@@ -12,7 +12,7 @@
  * ~/.agento/sessions/<time>.jsonl.
  *
  * Config is plain environment: OPENROUTER_API_KEY (required), AGENT_MODEL and AGENT_MAX_USD
- * (defaults for --model and --max-usd). In the agent repo, cli/scripts/agent.sh supplies them through
+ * (defaults for --model and --max-usd). In the agent repo, cli/scripts/agento.sh supplies them through
  * varlock. There is no default model on purpose: pick one with --model (see `agento --models`).
  */
 import { homedir } from 'node:os';

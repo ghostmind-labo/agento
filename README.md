@@ -131,6 +131,10 @@ The same `go | pause | stop` vocabulary as ensemble's `guard(step)`, so one supe
 
 `src/` never names an app: no app database, no app link format, no app wording in prompts. If a line of the engine would only make sense for one app, it belongs behind a seam. `test/boundary.test.mts` enforces it, along with zero runtime dependencies and no hardcoded model ids. Jev's `jev-latest` alias is the one default.
 
+## Testing it from a terminal
+
+`cli/` is an opencode-style REPL built on the core (files, shell, MCP servers, skills, approvals, Jev checkpoints shown inline). It imports this repo's `src/` directly, so engine changes are testable immediately. It is not part of the npm package. See [`cli/Readme.md`](cli/Readme.md).
+
 ## Development
 
 ```

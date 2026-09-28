@@ -1,0 +1,242 @@
+/**
+ * `agent` — a terminal REPL to test the agent core, in the spirit of opencode.
+ *
+ *   agent                                   chat in the current directory
+ *   agent -p "what does this repo do?"      one turn, then exit (exit code 1 unless done)
+ *   agent --model <id> --guidance close --max-usd 0.2 --yes --verbose
+ *
+ * The agent gets: files (read/list/search, and write/edit with approval), the shell (each command
+ * approved), MCP servers from `.mcp.json`, and skills from `.claude/skills`. Every tool call, Jev
+ * checkpoint, level change and cost is printed, and every event is logged to
+ * ~/.agent-cli/sessions/<time>.jsonl. OPENROUTER_API_KEY and defaults come from varlock (cli/.env.schema).
+ */
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
+import { createInterface } from 'node:readline/promises';
+import { dirSkills, modelCatalog, openrouter, type Guidance, type Toolset } from './engine.ts';
+import { connectAll, type McpConnection } from './mcp.ts';
+import { createSession, type Answer } from './session.ts';
+import { fileToolset } from './tools/files.ts';
+import { shellToolset } from './tools/shell.ts';
+import { c, printer, summary } from './ui.ts';
+
+const { values: flags } = parseArgs({
+  options: {
+    prompt: { type: 'string', short: 'p' },
+    model: { type: 'string', short: 'm' },
+    guidance: { type: 'string', short: 'g' },
+    'max-usd': { type: 'string' },
+    cwd: { type: 'string' },
+    yes: { type: 'boolean', short: 'y' },
+    verbose: { type: 'boolean', short: 'v' },
+    'no-mcp': { type: 'boolean' },
+    'no-skills': { type: 'boolean' },
+    'no-shell': { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' },
+  },
+});
+
+const HELP = `agent — test the agent core from a terminal
+
+  agent [options]            chat in the current directory
+  agent -p "…" [options]     one turn, then exit
+
+  -m, --model <id>           OpenRouter model (default: $AGENT_MODEL)
+  -g, --guidance <level>     auto | off | light | normal | close | N   (default: auto)
+      --max-usd <n>          USD cap per turn (default: $AGENT_MAX_USD)
+      --cwd <dir>            working directory (default: here)
+  -y, --yes                  approve every change and command without asking
+  -v, --verbose              longer tool results, and the transient lines said to the model
+      --no-mcp --no-skills --no-shell
+
+In the chat:  /help  /model [id]  /models [filter]  /guidance [level]  /budget [usd]
+              /cost  /tools  /mcp  /skills  /auto  /log  /clear  /exit      Ctrl+C stops a turn`;
+
+if (flags.help) {
+  console.log(HELP);
+  process.exit(0);
+}
+
+const parseGuidance = (s: string | undefined): Guidance | null => {
+  if (!s) return 'auto';
+  if (['auto', 'off', 'light', 'normal', 'close'].includes(s)) return s as Guidance;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+};
+
+const root = resolve(flags.cwd ?? process.cwd());
+const model = flags.model ?? process.env.AGENT_MODEL;
+const guidance = parseGuidance(flags.guidance);
+if (guidance === null) {
+  console.error(`--guidance must be auto, off, light, normal, close or a number`);
+  process.exit(2);
+}
+if (!process.env.OPENROUTER_API_KEY) {
+  console.error('OPENROUTER_API_KEY is not set. Run through varlock: cli/scripts/agent.sh (or `run routine dev` in cli/).');
+  process.exit(2);
+}
+
+const oneShot = flags.prompt !== undefined;
+const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
+const out = (s: string) => process.stdout.write(s);
+const print = printer(out, { stream: true, verbose: !!flags.verbose });
+
+// ── tools ──
+const toolsets: Toolset[] = [fileToolset(root), ...(flags['no-shell'] ? [] : [shellToolset(root)])];
+let mcp: McpConnection[] = [];
+if (!flags['no-mcp']) {
+  mcp = await connectAll(root, text => out(c.yellow(`${text}\n`)));
+  for (const m of mcp) if (m.toolset) toolsets.push(m.toolset);
+}
+const skills = flags['no-skills'] ? undefined : dirSkills(join(root, '.claude', 'skills'), join(homedir(), '.claude', 'skills'));
+
+// ── approvals ──
+const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {
+  if (!process.stdin.isTTY) return 'no';
+  if (print.midLine()) out('\n');
+  const a = (await rl.question(`${c.yellow('?')} ${c.bold(req.summary)}\n  ${c.dim('allow? [y]es / [n]o / [a]lways for')} ${req.tool} ${c.dim('›')} `)).trim().toLowerCase();
+  return a.startsWith('a') ? 'always' : a.startsWith('y') ? 'yes' : 'no';
+};
+
+const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+const session = createSession({
+  provider: openrouter({ model, headers: { 'X-Title': 'agent-cli' } }),
+  model,
+  root,
+  toolsets,
+  skills,
+  guidance,
+  maxUsd: Number(flags['max-usd'] ?? process.env.AGENT_MAX_USD ?? 0.5),
+  ask,
+  onEvent: print,
+  logPath: join(homedir(), '.agent-cli', 'sessions', `${stamp}.jsonl`),
+  profilesPath: join(homedir(), '.agent-cli', 'profiles.json'),
+  autoApprove: !!flags.yes,
+});
+
+// ── one turn ──
+let running: AbortController | null = null;
+async function turn(text: string) {
+  running = new AbortController();
+  try {
+    const r = await session.send(text, running.signal);
+    if (print.midLine()) out('\n');
+    out(`${summary(r, session.total)}\n`);
+    return r;
+  } catch (error) {
+    if (print.midLine()) out('\n');
+    out(`${c.red('error')} ${error instanceof Error ? error.message : String(error)}\n`);
+    return null;
+  } finally {
+    running = null;
+  }
+}
+
+rl.on('SIGINT', () => {
+  if (running) {
+    running.abort();
+    out(c.yellow('\n(stopping…)\n'));
+  } else {
+    out('\n');
+    rl.close();
+    process.exit(0);
+  }
+});
+
+if (oneShot) {
+  const r = await turn(flags.prompt!);
+  rl.close();
+  for (const m of mcp) m.session?.close();
+  process.exit(r && ['done', 'greeted', 'chatted'].includes(r.status) ? 0 : 1);
+}
+
+// ── the REPL ──
+out(`${c.bold('agent')} ${c.dim(`· ${model ?? '(no model)'} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
+const tools = toolsets.flatMap(s => s.tools.map(t => t.name));
+out(c.dim(`tools: ${tools.length} (${toolsets.map(s => `${s.name} ${s.tools.length}`).join(', ')}) · /help for commands\n`));
+for (const m of mcp) if (!m.ok) out(c.yellow(`mcp ${m.name}: ${m.error}\n`));
+
+async function command(line: string): Promise<boolean> {
+  const [cmd, ...rest] = line.slice(1).split(/\s+/);
+  const arg = rest.join(' ').trim();
+  switch (cmd) {
+    case 'help':
+      out(`${HELP}\n`);
+      break;
+    case 'exit':
+    case 'quit':
+      return false;
+    case 'model':
+      if (arg) session.model = arg;
+      out(`model: ${session.model}\n`);
+      break;
+    case 'models': {
+      const cards = (await modelCatalog()).filter(m => m.tools && (!arg || m.id.includes(arg) || m.name.toLowerCase().includes(arg.toLowerCase())));
+      cards.sort((a, b) => a.completion - b.completion);
+      for (const m of cards.slice(0, 20)) out(`${m.id.padEnd(48)} ${c.dim(`$${(m.completion * 1e6).toFixed(2)}/M out · ${Math.round(m.context / 1000)}k ctx`)}\n`);
+      out(c.dim(`${cards.length} tool-capable models${arg ? ` matching "${arg}"` : ''}, cheapest first\n`));
+      break;
+    }
+    case 'guidance': {
+      const g = parseGuidance(arg || undefined);
+      if (arg && g === null) out('auto | off | light | normal | close | N\n');
+      else if (arg) session.guidance = g!;
+      out(`guidance: ${String(session.guidance)}\n`);
+      break;
+    }
+    case 'budget':
+      if (arg && Number(arg) > 0) session.maxUsd = Number(arg);
+      out(`budget: $${session.maxUsd} per turn\n`);
+      break;
+    case 'cost':
+      out(`session: $${session.total.toFixed(5)} over ${session.turns} turn(s)\n`);
+      break;
+    case 'tools':
+      for (const s of toolsets) out(`${c.bold(s.name)}: ${s.tools.map(t => (t.write ? `${t.name}*` : t.name)).join(', ')}\n`);
+      out(c.dim('* asks approval\n'));
+      break;
+    case 'mcp':
+      if (!mcp.length) out('no MCP servers (add them to .mcp.json or ~/.agent-cli/mcp.json)\n');
+      for (const m of mcp) out(`${m.name}: ${m.ok ? c.green(`${m.tools} tools`) : c.red(m.error ?? 'failed')}\n`);
+      break;
+    case 'skills': {
+      const list = skills ? await skills.list() : [];
+      if (!list.length) out('no skills (.claude/skills here or in ~)\n');
+      for (const s of list) out(`${c.bold(s.name)} ${c.dim(s.description.slice(0, 100))}\n`);
+      break;
+    }
+    case 'auto':
+      session.autoApprove = !session.autoApprove;
+      out(`auto-approve: ${session.autoApprove ? c.yellow('on — every change and command runs without asking') : 'off'}\n`);
+      break;
+    case 'log':
+      out(`${session.logPath}\n`);
+      break;
+    case 'clear':
+      session.clear();
+      out('new conversation\n');
+      break;
+    default:
+      out(`unknown command /${cmd} — /help\n`);
+  }
+  return true;
+}
+
+for (;;) {
+  let line: string;
+  try {
+    line = (await rl.question(c.cyan('› '))).trim();
+  } catch {
+    break;
+  }
+  if (!line) continue;
+  if (line.startsWith('/')) {
+    if (!(await command(line))) break;
+    continue;
+  }
+  await turn(line);
+}
+rl.close();
+for (const m of mcp) m.session?.close();
+process.exit(0);

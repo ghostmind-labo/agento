@@ -22,7 +22,7 @@ Or `run routine dev` in `cli/` to chat in the repo root.
 
 **Approvals:** `y` allows once, `n` declines, `a` allows that tool for the rest of the session. `/auto` or `--yes` skips all approvals.
 
-**Model:** `agento model` opens a numbered list from the live catalogue (tool-capable, cheapest first, filter by words). The pick is saved as the default in `~/.agento/config.json`, so no flag is needed afterwards. `agento model <id>` sets it directly. In the chat, `/model` opens the same picker and `/default` saves the current one. `--model` overrides it for one run, and `AGENT_MODEL` forces one. It's empty in `.env.schema`, so the saved default applies.
+**Model:** `agento model` opens a scrollable list of agento's 16 curated models (tools + reasoning, the list Potion's Talk offers), each with its maker, a note and its live price. Use ↑/↓ and PgUp/PgDn to move, type to filter, Enter to choose, Esc to cancel. "Other model…" searches the whole catalogue, tools + reasoning only. The pick is saved as the default in `~/.agento/config.json`, so no flag is needed afterwards. `agento model <id>` sets it directly. In the chat, `/model` opens the same picker and `/default` saves the current one. `--model` overrides it for one run, and `AGENT_MODEL` forces one. It's empty in `.env.schema`, so the saved default applies.
 
 **Commands:** `/model [id]`, `/default [id]`, `/models [filter]`, `/guidance [level]`, `/budget [usd]`, `/cost`, `/tools`, `/mcp`, `/skills`, `/auto`, `/log`, `/clear`, `/exit`. Ctrl+C stops a turn.
 

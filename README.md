@@ -140,10 +140,10 @@ The package ships a terminal chat on the core, in the spirit of opencode. Use it
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
 npm install -g @ghostmind-dev/agent     # the command is `agento` (or: npx @ghostmind-dev/agent …)
-agento model                            # pick a model from the list, saved as the default
+agento model                            # pick from agento's short list (↑↓, type to filter), saved as the default
 agento                                  # chat in the current folder
 agento -p "what does this repo do?"     # one turn, then exit
-agento models deepseek                  # tool-capable models, cheapest first
+agento models                           # the short list with live prices (--all [filter] for every model)
 ```
 
 **What the agent can do:**
@@ -152,7 +152,7 @@ agento models deepseek                  # tool-capable models, cheapest first
 - **MCP servers:** from `.mcp.json` (Claude Code's format). This needs `@ghostmind-dev/ensemble` installed alongside, an *optional* peer dependency, so the package keeps zero runtime dependencies.
 - **Skills:** from `.claude/skills`. Jev picks which one a task needs.
 
-It shows every tool call, Jev checkpoint and cost, and logs each session to `~/.agento/sessions/`. The package names no model of its own. `agento model` saves your pick in `~/.agento/config.json`, `--model` overrides it for one run, and `AGENT_MODEL` forces one. `agento --help` lists the options. In this repo, `cli/scripts/agento.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
+It shows every tool call, Jev checkpoint and cost, and logs each session to `~/.agento/sessions/`. The engine names no model. agento, as an app, offers a short curated list of 16 models with tools and reasoning, each proven in an agent loop (the list Potion's Talk offers), in `src/cli/models.ts`. "Other model…" searches the whole catalogue. `agento model` saves your pick in `~/.agento/config.json`, `--model` overrides it for one run, and `AGENT_MODEL` forces one. `agento --help` lists the options. In this repo, `cli/scripts/agento.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
 
 ## Development
 

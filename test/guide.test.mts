@@ -51,7 +51,7 @@ const searches = (k: number): ScriptStep[] => Array.from({ length: k }, (_, i) =
 // 1 · the starting level from the catalogue: price, context, tools
 {
   assert.equal(levelFromCard(null).level, 'normal');
-  const card = (completion: number, extra = {}) => ({ id: 'm', name: 'm', prompt: 0, completion: completion / 1e6, context: 200_000, tools: true, vision: false, ...extra });
+  const card = (completion: number, extra = {}) => ({ id: 'm', name: 'm', prompt: 0, completion: completion / 1e6, context: 200_000, tools: true, reasoning: true, vision: false, ...extra });
   assert.equal(levelFromCard(card(15)).level, 'light');
   assert.equal(levelFromCard(card(4)).level, 'normal');
   assert.equal(levelFromCard(card(0.4)).level, 'close');

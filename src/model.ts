@@ -295,6 +295,8 @@ export interface ModelCard {
   completion: number;
   context: number;
   tools: boolean;
+  /** Supports reasoning (OpenRouter's `reasoning` parameter). */
+  reasoning: boolean;
   vision: boolean;
 }
 
@@ -321,6 +323,7 @@ export function modelCatalog(config: Pick<OpenRouterConfig, 'baseUrl' | 'fetch'>
         completion: Number(m.pricing?.completion ?? 0),
         context: m.context_length ?? 0,
         tools: (m.supported_parameters ?? []).includes('tools'),
+        reasoning: (m.supported_parameters ?? []).includes('reasoning'),
         vision: (m.architecture?.input_modalities ?? []).includes('image'),
       }));
     })();

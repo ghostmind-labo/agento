@@ -43,19 +43,12 @@ export function resolveModel(flag: string | undefined, env: string | undefined, 
   return {};
 }
 
-/** Tool-capable models matching a filter (id or name, any word), cheapest first. */
+/** Models matching a filter (id or name, every word), cheapest first; tool-capable only. */
 export function pickable(cards: ModelCard[], filter = ''): ModelCard[] {
   const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
   return cards
     .filter(m => m.tools && words.every(w => m.id.toLowerCase().includes(w) || m.name.toLowerCase().includes(w)))
     .sort((a, b) => a.completion - b.completion || a.id.localeCompare(b.id));
-}
-
-/** A reply to the picker: a number from the list shown, or an exact id from the whole catalogue. */
-export function choose(input: string, shown: ModelCard[], all: ModelCard[]): string | null {
-  const s = input.trim();
-  if (/^\d+$/.test(s)) return shown[Number(s) - 1]?.id ?? null;
-  return all.find(m => m.id === s)?.id ?? null;
 }
 
 export const price = (m: ModelCard) => `$${(m.completion * 1e6).toFixed(2)}/M out · ${Math.round(m.context / 1000)}k ctx`;

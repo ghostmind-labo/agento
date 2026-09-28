@@ -86,12 +86,12 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 {
   forgetCatalog();
   const m = mock(() =>
-    json({ data: [{ id: 'v/big', name: 'Big', context_length: 200000, pricing: { prompt: '0.000003', completion: '0.000015' }, supported_parameters: ['tools'], architecture: { input_modalities: ['text', 'image'] } }] })
+    json({ data: [{ id: 'v/big', name: 'Big', context_length: 200000, pricing: { prompt: '0.000003', completion: '0.000015' }, supported_parameters: ['tools', 'reasoning'], architecture: { input_modalities: ['text', 'image'] } }] })
   );
   const cards = await modelCatalog({ fetch: m.fetch });
   await modelCatalog({ fetch: m.fetch });
   assert.equal(m.seen.length, 1, 'cached');
-  assert.deepEqual(cards[0], { id: 'v/big', name: 'Big', prompt: 0.000003, completion: 0.000015, context: 200000, tools: true, vision: true });
+  assert.deepEqual(cards[0], { id: 'v/big', name: 'Big', prompt: 0.000003, completion: 0.000015, context: 200000, tools: true, reasoning: true, vision: true });
   const card = await openrouter({ apiKey: 'k', fetch: m.fetch }).card!('v/big');
   assert.equal(card?.name, 'Big');
   assert.equal(await openrouter({ apiKey: 'k', fetch: m.fetch }).card!('v/unknown'), null);

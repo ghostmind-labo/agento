@@ -70,7 +70,7 @@ export function scriptedModel(script: ScriptStep[], options: { decide?: Scripted
   };
   if (options.card) {
     const card = options.card;
-    provider.card = async model => ({ id: model, name: model, prompt: 0, completion: 0, context: 128_000, tools: true, vision: false, ...card });
+    provider.card = async model => ({ id: model, name: model, prompt: 0, completion: 0, context: 128_000, tools: true, reasoning: true, vision: false, ...card });
   }
   if (options.decide !== false) {
     const answer = options.decide ?? firstOption;

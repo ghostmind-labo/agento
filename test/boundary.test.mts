@@ -35,9 +35,14 @@ const sources = (dir = join(repo, 'src')): string[] =>
   ok('zero runtime dependencies; ensemble optional and loaded dynamically');
 }
 
-// 3 · no hardcoded worker model ids in src/ (Jev's alias is the one default, as in ensemble)
+// 3 · no hardcoded worker model ids in src/ (Jev's alias is the one default, as in ensemble).
+// One exception: src/cli/models.ts, the agento app's curated list — an app's choice, like Potion's,
+// never the engine's. The engine code must not import it.
 {
+  const CURATED = join(repo, 'src', 'cli', 'models.ts');
   for (const file of sources()) {
+    if (file === CURATED) continue;
+    if (!file.includes(`${join('src', 'cli')}`)) assert.ok(!/cli\/models/.test(readFileSync(file, 'utf8')), `${file}: the engine imports the CLI's model list`);
     const code = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     const ids = [...code.matchAll(/['"`]((anthropic|openai|google|deepseek|meta-llama|mistralai|qwen|x-ai|z-ai|moonshotai)\/[\w.-]+)['"`]/g)].map(m => m[1]);
     assert.deepEqual(ids, [], `${file} hardcodes ${ids.join(', ')}`);

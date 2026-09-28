@@ -10,9 +10,11 @@ import type { ModelCard } from '../src/index.ts';
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
 process.env.AGENTO_HOME = mkdtempSync(join(tmpdir(), 'agento-home-'));
-const { choose, home, pickable, readConfig, resolveModel, writeConfig } = await import('../src/cli/config.ts');
+const { home, pickable, readConfig, resolveModel, writeConfig } = await import('../src/cli/config.ts');
+const { CURATED, capable, labelOf, offered } = await import('../src/cli/models.ts');
+const { filterItems, windowStart } = await import('../src/cli/picker.ts');
 
-const card = (id: string, perM: number, tools = true): ModelCard => ({ id, name: id.split('/')[1]!.replace(/-/g, ' '), prompt: 0, completion: perM / 1e6, context: 128_000, tools, vision: false });
+const card = (id: string, perM: number, tools = true): ModelCard => ({ id, name: id.split('/')[1]!.replace(/-/g, ' '), prompt: 0, completion: perM / 1e6, context: 128_000, tools, reasoning: tools, vision: false });
 const CATALOG = [card('z-ai/glm-5.3', 4.4), card('z-ai/glm-5.3-flash', 0.5), card('anthropic/claude-sonnet-5', 15), card('x/no-tools', 0.1, false), card('deepseek/deepseek-v4', 1.1)];
 
 // 1 · the config file: under AGENTO_HOME, merged, written atomically
@@ -44,15 +46,30 @@ const CATALOG = [card('z-ai/glm-5.3', 4.4), card('z-ai/glm-5.3-flash', 0.5), car
   ok('pickable');
 }
 
-// 4 · a reply: a number from what was shown, or an exact id from the whole catalogue
+// 4 · the short list: in the live catalogue, capable (tools + reasoning), in the curated order
 {
-  const shown = pickable(CATALOG, 'glm');
-  assert.equal(choose('2', shown, CATALOG), 'z-ai/glm-5.3');
-  assert.equal(choose(' 1 ', shown, CATALOG), 'z-ai/glm-5.3-flash');
-  assert.equal(choose('9', shown, CATALOG), null);
-  assert.equal(choose('anthropic/claude-sonnet-5', shown, CATALOG), 'anthropic/claude-sonnet-5', 'an id outside the shown list');
-  assert.equal(choose('claude', shown, CATALOG), null);
-  ok('choose');
+  const live = [card('anthropic/claude-sonnet-5', 10), card('z-ai/glm-5.3-flash', 0.5), { ...card('openai/gpt-6-luna', 0.5), reasoning: false }, card('x/not-curated', 0.1)];
+  assert.deepEqual(offered(live).map(m => m.id), ['anthropic/claude-sonnet-5', 'z-ai/glm-5.3-flash'], 'missing, reasoning-less and uncurated models are not offered; order is the list\'s');
+  assert.equal(offered([]).length, 0, 'no catalogue, nothing offered');
+  assert.ok(CURATED.length >= 10 && CURATED.every(m => m.id.includes('/') && m.label && m.maker && m.note));
+  assert.equal(new Set(CURATED.map(m => m.id)).size, CURATED.length, 'no duplicates');
+  assert.equal(labelOf('z-ai/glm-5.3-flash'), 'GLM 5.3 Flash');
+  assert.equal(labelOf('x/unknown'), 'x/unknown');
+  assert.ok(!capable({ ...card('a/b', 1), reasoning: false }));
+  ok('offered: curated, live, capable');
+}
+
+// 4b · the picker's logic: filter by every word; the window follows the cursor
+{
+  const items = [{ label: 'Claude Sonnet 5', detail: 'Anthropic · Balanced', value: 1 }, { label: 'GLM 5.3 Flash', detail: 'Zhipu · Open weights', value: 2 }, { label: 'Other model…', value: 3 }];
+  assert.deepEqual(filterItems(items, 'open zhipu').map(i => i.value), [2]);
+  assert.deepEqual(filterItems(items, 'ANTHROPIC').map(i => i.value), [1]);
+  assert.deepEqual(filterItems(items, '').map(i => i.value), [1, 2, 3]);
+  assert.equal(windowStart(0, 0, 5, 20), 0);
+  assert.equal(windowStart(7, 0, 5, 20), 3, 'scrolls down to keep the cursor on the last row');
+  assert.equal(windowStart(2, 3, 5, 20), 2, 'scrolls up to the cursor');
+  assert.equal(windowStart(19, 15, 5, 20), 15);
+  ok('filterItems + windowStart');
 }
 
 // 5 · the entry point uses the saved default: no flag, no env, no picker

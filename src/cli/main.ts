@@ -19,9 +19,11 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { createInterface } from 'node:readline/promises';
+import { createInterface, type Interface } from 'node:readline/promises';
 import { dirSkills, modelCatalog, openrouter, type Guidance, type ModelCard, type Toolset } from '../index.ts';
-import { choose, home, pickable, price, readConfig, resolveModel, writeConfig } from './config.ts';
+import { home, pickable, price, readConfig, resolveModel, writeConfig } from './config.ts';
+import { capable, labelOf, offered } from './models.ts';
+import { pick, type Item } from './picker.ts';
 import { connectAll, type McpConnection } from './mcp.ts';
 import { createSession, type Answer } from './session.ts';
 import { fileToolset } from './files.ts';
@@ -42,6 +44,7 @@ const { values: flags, positionals } = parseArgs({
     'no-shell': { type: 'boolean' },
     models: { type: 'boolean' },
     pick: { type: 'boolean' },
+    all: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
   allowPositionals: true,
@@ -54,7 +57,8 @@ const HELP = `agento — the agent core in a terminal
 
   agento model               pick the default model from a list (saved; no flag needed after)
   agento model <id>          set the default model directly
-  agento models [filter]     tool-capable OpenRouter models, cheapest first
+  agento models              the models agento offers, with live prices
+  agento models --all [f]    every OpenRouter model with tools + reasoning, cheapest first
 
   -m, --model <id>           OpenRouter model for this run (else $AGENT_MODEL, else the saved default)
   -g, --guidance <level>     auto | off | light | normal | close | N   (default: auto)
@@ -64,7 +68,7 @@ const HELP = `agento — the agent core in a terminal
   -v, --verbose              longer tool results, and the transient lines said to the model
       --no-mcp --no-skills --no-shell
 
-In the chat:  /model            pick from the list (and save as default)
+In the chat:  /model            pick from the list (↑↓, type to filter; then save as default)
               /model <id>       switch for this session     /default [id]  save as the default
               /models [filter]  /guidance [level]  /budget [usd]  /cost  /tools  /mcp  /skills
               /auto  /log  /clear  /help  /exit                               Ctrl+C stops a turn`;
@@ -74,15 +78,35 @@ if (flags.help) {
   process.exit(0);
 }
 
-async function listModels(filter: string | undefined, write: (s: string) => void) {
-  const cards = pickable(await modelCatalog(), filter);
-  for (const m of cards.slice(0, 20)) write(`${m.id.padEnd(48)} ${c.dim(price(m))}\n`);
-  write(c.dim(`${cards.length} tool-capable models${filter ? ` matching "${filter}"` : ''}, cheapest first\n`));
+async function catalog(): Promise<ModelCard[] | null> {
+  try {
+    return await modelCatalog();
+  } catch (error) {
+    process.stderr.write(c.red(`could not load the model list from OpenRouter: ${error instanceof Error ? error.message : String(error)}\n`));
+    return null;
+  }
+}
+
+/** `agento models`: the curated list; `--all [filter]`: every capable model in the catalogue. */
+async function listModels(filter: string | undefined, all: boolean, write: (s: string) => void) {
+  const cards = await catalog();
+  if (!cards) return;
+  if (all) {
+    const list = pickable(cards.filter(capable), filter);
+    for (const m of list.slice(0, 40)) write(`${m.id.padEnd(48)} ${c.dim(price(m))}\n`);
+    write(c.dim(`${list.length} models with tools + reasoning${filter ? ` matching "${filter}"` : ''}, cheapest first${list.length > 40 ? ' (first 40)' : ''}\n`));
+    return;
+  }
+  const saved = readConfig().model;
+  for (const m of offered(cards)) {
+    write(`${m.label.padEnd(22)} ${c.dim(`${m.maker} · ${m.note}`.padEnd(46))} ${c.dim(price(m.card))}  ${c.dim(m.id)}${m.id === saved ? c.green(' ← default') : ''}\n`);
+  }
+  write(c.dim('agento model to choose one · agento models --all [filter] for the whole catalogue\n'));
 }
 
 const [sub, subArg] = positionals;
 if (sub === 'models' || flags.models) {
-  await listModels(sub === 'models' ? subArg : sub, s => process.stdout.write(s));
+  await listModels(sub === 'models' ? subArg : sub, !!flags.all, s => process.stdout.write(s));
   process.exit(0);
 }
 if (sub && sub !== 'model') {
@@ -99,52 +123,68 @@ const parseGuidance = (s: string | undefined): Guidance | null => {
 
 const root = resolve(flags.cwd ?? process.cwd());
 const oneShot = flags.prompt !== undefined;
-const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
 const out = (s: string) => process.stdout.write(s);
 
+// The line reader is closed while the picker owns the keyboard, and made again on the next question.
+let running: AbortController | null = null;
+let lineReader: Interface | null = null;
+function reader(): Interface {
+  if (lineReader) return lineReader;
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
+  // Ctrl+C: stop the running turn, or leave when nothing runs.
+  rl.on('SIGINT', () => {
+    if (running) {
+      running.abort();
+      out(c.yellow('\n(stopping…)\n'));
+    } else {
+      out('\n');
+      releaseReader();
+      process.exit(0);
+    }
+  });
+  lineReader = rl;
+  return rl;
+}
+function releaseReader() {
+  lineReader?.close();
+  lineReader = null;
+}
+
+const OTHER = '\u0000other';
+
 /**
- * The picker: a filter, then a numbered list from the live catalogue (tool-capable, cheapest
- * first). Reply with a number, an exact id, or `/words` to filter again; Enter alone cancels.
+ * The model picker: agento's short list (tools + reasoning, live prices), scrollable, filter as you
+ * type; "Other model…" opens the whole catalogue (tools + reasoning only).
  */
 async function pickModel(current: string | undefined): Promise<string | null> {
-  let all: ModelCard[];
-  try {
-    all = await modelCatalog();
-  } catch (error) {
-    out(c.red(`could not load the model list: ${error instanceof Error ? error.message : String(error)}\n`));
-    return null;
-  }
+  const cards = await catalog();
+  if (!cards) return null;
   const saved = readConfig().model;
-  let filter = (await rl.question(`${c.cyan('filter')} ${c.dim('(e.g. glm, claude sonnet, deepseek — Enter for all)')} › `)).trim();
-  for (;;) {
-    const shown = pickable(all, filter).slice(0, 30);
-    if (!shown.length) out(c.yellow(`no tool-capable model matches "${filter}"\n`));
-    shown.forEach((m, i) => {
-      const mark = m.id === current ? c.green(' ← current') : m.id === saved ? c.green(' ← default') : '';
-      out(`${c.dim(String(i + 1).padStart(3))}  ${m.id.padEnd(46)} ${c.dim(price(m))}${mark}\n`);
-    });
-    const total = pickable(all, filter).length;
-    if (total > shown.length) out(c.dim(`     …${total - shown.length} more: narrow with /words\n`));
-    const answer = (await rl.question(`${c.cyan('model')} ${c.dim('(number, id, /filter, Enter to cancel)')} › `)).trim();
-    if (!answer) return null;
-    if (answer.startsWith('/')) {
-      filter = answer.slice(1).trim();
-      continue;
-    }
-    const id = choose(answer, shown, all);
-    if (id) return id;
-    out(c.yellow(`"${answer}" is not a number in the list or a model id\n`));
-  }
+  const mark = (id: string) => (id === current ? '← current' : id === saved ? '← default' : '');
+  releaseReader();
+  const list = offered(cards);
+  const items: Item<string>[] = [
+    ...list.map(m => ({ label: m.label, detail: `${m.maker} · ${m.note}`, aside: `${price(m.card).split(' · ')[0]!.padStart(12)} ${mark(m.id)}`, value: m.id })),
+    { label: 'Other model…', detail: 'search every OpenRouter model with tools + reasoning', value: OTHER },
+  ];
+  const at = list.findIndex(m => m.id === (current ?? saved));
+  const id = await pick(items, { title: 'Model', initial: at >= 0 ? at : 0 });
+  if (id !== OTHER) return id;
+  const everything = pickable(cards.filter(capable));
+  return pick(
+    everything.map(m => ({ label: m.id, detail: m.name, aside: `${price(m).split(' · ')[0]!.padStart(12)} ${mark(m.id)}`, value: m.id })),
+    { title: `All models with tools + reasoning (${everything.length}, cheapest first)` }
+  );
 }
 
 /** Pick, then offer to save it as the default. */
 async function pickAndMaybeSave(current: string | undefined): Promise<string | null> {
   const id = await pickModel(current);
   if (!id) return null;
-  const save = (await rl.question(`save ${c.bold(id)} as the default? ${c.dim('[Y/n]')} › `)).trim().toLowerCase();
+  const save = (await reader().question(`${c.bold(labelOf(id))} ${c.dim(`(${id})`)} — save as the default? ${c.dim('[Y/n]')} › `)).trim().toLowerCase();
   if (!save.startsWith('n')) {
     writeConfig({ model: id });
-    out(c.green(`default model: ${id}`) + c.dim(` (${join(home(), 'config.json')})\n`));
+    out(c.green(`default model: ${labelOf(id)}`) + c.dim(` (${join(home(), 'config.json')})\n`));
   }
   return id;
 }
@@ -161,9 +201,9 @@ if (sub === 'model') {
   }
   if (id) {
     writeConfig({ model: id });
-    out(`${c.green(`default model: ${id}`)}${c.dim(` (${join(home(), 'config.json')})`)}\n`);
+    out(`${c.green(`default model: ${labelOf(id)}`)}${c.dim(` ${id === labelOf(id) ? '' : `(${id}) `}→ ${join(home(), 'config.json')}`)}\n`);
   }
-  rl.close();
+  releaseReader();
   process.exit(id ? 0 : 1);
 }
 
@@ -205,7 +245,7 @@ const skills = flags['no-skills'] ? undefined : dirSkills(join(root, '.claude', 
 const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {
   if (!process.stdin.isTTY) return 'no';
   if (print.midLine()) out('\n');
-  const a = (await rl.question(`${c.yellow('?')} ${c.bold(req.summary)}\n  ${c.dim('allow? [y]es / [n]o / [a]lways for')} ${req.tool} ${c.dim('›')} `)).trim().toLowerCase();
+  const a = (await reader().question(`${c.yellow('?')} ${c.bold(req.summary)}\n  ${c.dim('allow? [y]es / [n]o / [a]lways for')} ${req.tool} ${c.dim('›')} `)).trim().toLowerCase();
   return a.startsWith('a') ? 'always' : a.startsWith('y') ? 'yes' : 'no';
 };
 
@@ -226,7 +266,6 @@ const session = createSession({
 });
 
 // ── one turn ──
-let running: AbortController | null = null;
 async function turn(text: string) {
   running = new AbortController();
   try {
@@ -243,26 +282,15 @@ async function turn(text: string) {
   }
 }
 
-rl.on('SIGINT', () => {
-  if (running) {
-    running.abort();
-    out(c.yellow('\n(stopping…)\n'));
-  } else {
-    out('\n');
-    rl.close();
-    process.exit(0);
-  }
-});
-
 if (oneShot) {
   const r = await turn(flags.prompt!);
-  rl.close();
+  releaseReader();
   for (const m of mcp) m.session?.close();
   process.exit(r && ['done', 'greeted', 'chatted'].includes(r.status) ? 0 : 1);
 }
 
 // ── the REPL ──
-out(`${c.bold('agento')} ${c.dim(`· ${model}${from === 'default' ? ' (default)' : ''} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
+out(`${c.bold('agento')} ${c.dim(`· ${labelOf(model)}${from === 'default' ? ' (default)' : ''} · guidance ${String(guidance)} · $${session.maxUsd}/turn · ${root}`)}\n`);
 const tools = toolsets.flatMap(s => s.tools.map(t => t.name));
 out(c.dim(`tools: ${tools.length} (${toolsets.map(s => `${s.name} ${s.tools.length}`).join(', ')}) · /help for commands\n`));
 for (const m of mcp) if (!m.ok) out(c.yellow(`mcp ${m.name}: ${m.error}\n`));
@@ -296,7 +324,7 @@ async function command(line: string): Promise<boolean> {
       break;
     }
     case 'models':
-      await listModels(arg || undefined, out);
+      await listModels(arg.replace(/^--all\s*/, '') || undefined, arg.startsWith('--all'), out);
       break;
     case 'guidance': {
       const g = parseGuidance(arg || undefined);
@@ -346,7 +374,7 @@ async function command(line: string): Promise<boolean> {
 for (;;) {
   let line: string;
   try {
-    line = (await rl.question(c.cyan('› '))).trim();
+    line = (await reader().question(c.cyan('› '))).trim();
   } catch {
     break;
   }
@@ -357,6 +385,6 @@ for (;;) {
   }
   await turn(line);
 }
-rl.close();
+releaseReader();
 for (const m of mcp) m.session?.close();
 process.exit(0);

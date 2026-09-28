@@ -12,9 +12,11 @@ It is a **library**: import it, give it tools, run it. No server, no service, no
 
 ```
             @ghostmind-dev/agent   (engine: loop, model + Jev, guide, budget, hooks, events)
-             /            |              \
-      an app's agent   another app's   an ensemble work node
+             /                    |                        \
+   a node in ensemble      a command line (cli/)      imported by an app (Potion, later)
 ```
+
+**One core, three ways in.** The same engine runs inside an ensemble `work` node, behind a terminal REPL, or imported into an app. Each keeps its own tools, prompts and approvals.
 
 **Share the engine, not the agent.** What makes an agent *yours* is its tools, prompts, memory and approvals, and each app keeps those. What every app needs, and what is hard to get right, is the loop: the guards that stop a model looping, stalling, inventing tool calls or overspending. That lives here once.
 

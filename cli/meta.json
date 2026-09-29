@@ -3,10 +3,16 @@
   "name": "cli",
   "type": "app",
   "description": "A terminal REPL to test the agent core: files, shell, MCP servers and skills, with approvals, Jev checkpoints and costs shown inline",
-  "tags": ["agent", "cli"],
+  "tags": [
+    "agent",
+    "cli"
+  ],
   "routines": {
     "dev": "varlock run -- bash scripts/dev.sh",
-    "test": "bash scripts/test.sh"
+    "test": "bash scripts/test.sh",
+    "train": "bash scripts/train.sh",
+    "train_report": "bash scripts/train.sh --report",
+    "install_daily": "bash scripts/install-daily.sh"
   },
   "herdr": {
     "workspaces": [
@@ -20,8 +26,14 @@
             "compact": {
               "type": "vertical",
               "panes": [
-                { "name": "dev", "description": "the agent REPL (run routine dev), working in labo/agent" },
-                { "name": "execution-shell", "description": "ad-hoc commands" }
+                {
+                  "name": "dev",
+                  "description": "the agent REPL (run routine dev), working in labo/agent"
+                },
+                {
+                  "name": "execution-shell",
+                  "description": "ad-hoc commands"
+                }
               ]
             }
           }

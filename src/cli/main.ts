@@ -24,6 +24,7 @@ import { dirSkills, ModelError, modelCatalog, openrouter, type Guidance, type Mo
 import { home, pickable, price, readConfig, resolveModel, writeConfig } from './config.ts';
 import { capable, labelOf, offered } from './models.ts';
 import { pick, type Item } from './picker.ts';
+import { loadStrategy } from './gym/strategy.ts';
 import { connectAll, type McpConnection } from './mcp.ts';
 import { createSession, type Answer } from './session.ts';
 import { fileToolset } from './files.ts';
@@ -46,6 +47,10 @@ const { values: flags, positionals } = parseArgs({
     models: { type: 'boolean' },
     pick: { type: 'boolean' },
     all: { type: 'boolean' },
+    rounds: { type: 'string' },
+    size: { type: 'string' },
+    seed: { type: 'string' },
+    report: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
   allowPositionals: true,
@@ -59,6 +64,8 @@ const HELP = `agento — the agent core in a terminal
   agento model               pick the default model from a list (saved; no flag needed after)
   agento model <id>          set the default model directly
   agento models              the models agento offers, with live prices
+  agento train               train the harness around your model: fresh challenges, keep what
+                             scores better (--rounds 3, --size 6, --max-usd 0.05; --report)
   agento models --all [f]    every OpenRouter model with tools + reasoning, cheapest first
 
   -m, --model <id>           OpenRouter model for this run (else $AGENT_MODEL, else the saved default)
@@ -74,7 +81,7 @@ const HELP = `agento — the agent core in a terminal
 In the chat:  /model            pick from the list (↑↓, type to filter; then save as default)
               /model <id>       switch for this session     /default [id]  save as the default
               /models [filter]  /guidance [level]  /budget [usd]  /cost  /tools  /mcp  /skills
-              /style [minimal|normal|verbose]  (saved as default)
+              /style [minimal|normal|verbose]  (saved as default)   /strategy  what training learned
               /auto  /log  /clear  /help  /exit                               Ctrl+C stops a turn`;
 
 if (flags.help) {
@@ -113,7 +120,7 @@ if (sub === 'models' || flags.models) {
   await listModels(sub === 'models' ? subArg : sub, !!flags.all, s => process.stdout.write(s));
   process.exit(0);
 }
-if (sub && sub !== 'model') {
+if (sub && sub !== 'model' && sub !== 'train') {
   console.error(`unknown command "${sub}" — agento --help`);
   process.exit(2);
 }
@@ -211,6 +218,22 @@ if (sub === 'model') {
   process.exit(id ? 0 : 1);
 }
 
+// `agento train`: the gym. Uses the saved/flag model, or the cheapest one agento offers.
+if (sub === 'train') {
+  const { runTraining } = await import('./gym/command.ts');
+  const code = await runTraining({
+    model: flags.model ?? (process.env.AGENT_MODEL || undefined) ?? readConfig().model,
+    rounds: Number(flags.rounds ?? 3),
+    size: Number(flags.size ?? 6),
+    maxUsd: Number(flags['max-usd'] ?? 0.05),
+    seed: flags.seed ? Number(flags.seed) : undefined,
+    report: !!flags.report,
+    out,
+  });
+  releaseReader();
+  process.exit(code);
+}
+
 let { model, from } = resolveModel(flags.model, process.env.AGENT_MODEL, readConfig());
 if (flags.pick || (!model && !oneShot && process.stdin.isTTY)) {
   if (!model) out(c.dim('No model yet: pick one (saved as the default, so you only do this once).\n'));
@@ -260,6 +283,7 @@ const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {
   return a.startsWith('a') ? 'always' : a.startsWith('y') ? 'yes' : 'no';
 };
 
+const strategy = loadStrategy(model);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const session = createSession({
   provider: openrouter({ model, headers: { 'X-Title': 'agento' } }),
@@ -267,7 +291,9 @@ const session = createSession({
   root,
   toolsets,
   skills,
-  guidance,
+  // An explicit --guidance wins; otherwise what training settled on for this model.
+  guidance: flags.guidance || !strategy ? guidance : strategy.guidance,
+  strategy: strategy ?? undefined,
   maxUsd: Number(flags['max-usd'] ?? process.env.AGENT_MAX_USD ?? 0.5),
   ask,
   onEvent: print,
@@ -305,7 +331,7 @@ if (oneShot) {
 }
 
 // ── the REPL ──
-out(`${c.bold('agento')} ${c.dim(`· ${labelOf(model)}${from === 'default' ? '' : ` (${from})`} · ${root.replace(homedir(), '~')} · /help`)}\n`);
+out(`${c.bold('agento')} ${c.dim(`· ${labelOf(model)}${from === 'default' ? '' : ` (${from})`}${strategy ? ` · trained ${Math.round((strategy.score ?? 0) * 100)}%` : ''} · ${root.replace(homedir(), '~')} · /help`)}\n`);
 for (const m of mcp) if (!m.ok) out(c.yellow(`mcp ${m.name}: ${m.error}\n`));
 
 async function command(line: string): Promise<boolean> {
@@ -385,6 +411,13 @@ async function command(line: string): Promise<boolean> {
       out(`style: ${print.style}${next ? c.dim(' (saved as default)') : c.dim(` — ${STYLES.join(' · ')}`)}\n`);
       break;
     }
+    case 'strategy':
+      if (!strategy) out(`no training yet for ${labelOf(session.model ?? '')} — run: agento train\n`);
+      else {
+        out(`${c.bold(`trained for ${labelOf(strategy.model)}`)} ${c.dim(`score ${Math.round((strategy.score ?? 0) * 100)}% · guidance ${String(strategy.guidance)} · maxSteps ${strategy.maxSteps} · readNudgeAt ${strategy.readNudgeAt}`)}\n`);
+        for (const rule of strategy.rules) out(`  • ${rule}\n`);
+      }
+      break;
     case 'log':
       out(`${session.logPath}\n`);
       break;

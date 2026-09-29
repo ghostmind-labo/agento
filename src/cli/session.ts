@@ -40,9 +40,12 @@ export interface SessionOptions {
   /** Per-model guide profiles, so the guide learns across sessions. */
   profilesPath?: string;
   autoApprove?: boolean;
+  /** What training learned for this model: its rules, guidance and read nudge are applied. */
+  strategy?: { rules: string[]; maxSteps: number; maxToolCalls: number; readNudgeAt: number };
 }
 
-const SYSTEM_EXTRA = (root: string) => [
+/** The CLI's own lines, after the engine's defaults. Training uses the same ones. */
+export const cliSystem = (root: string): string[] => [
   `You are a command-line agent on the person's machine, working in ${root}. Paths are relative to it.`,
   'Look before you answer: list, search and read files instead of guessing what they contain. Quote paths and line numbers you actually read.',
   'To change a file, read it first, then use edit_file with an exact passage (or write_file for a new file). Every change and every shell command waits for the person\'s approval.',
@@ -76,11 +79,11 @@ export function createSession(o: SessionOptions) {
       },
       toolsets: o.toolsets,
       skills: o.skills,
-      prompts: { system: [...defaultPrompts.system, ...SYSTEM_EXTRA(o.root)] },
+      prompts: { system: [...defaultPrompts.system, ...cliSystem(o.root), ...(o.strategy?.rules ?? [])] },
       history,
       guidance,
       guide: profiles ? { profiles } : undefined,
-      budget: { maxUsd, maxSteps: 16, maxToolCalls: 30 },
+      budget: { maxUsd, maxSteps: Math.max(16, o.strategy?.maxSteps ?? 0), maxToolCalls: Math.max(30, o.strategy?.maxToolCalls ?? 0), ...(o.strategy ? { readNudgeAt: o.strategy.readNudgeAt } : {}) },
       approve: async request => {
         if (autoApprove || always.has(request.tool)) return true;
         const a = await o.ask(request);

@@ -25,6 +25,16 @@ Or `run routine dev` in `cli/` to chat in the repo root.
 
 Answers render as markdown, as they stream: box-drawn tables fitted to your terminal (cells wrap), headings, **bold**, `code`, lists, quotes and code blocks. `NO_COLOR` or piped output keeps the layout without the colours. Jev guides the agent in every style; only `verbose` shows its scores. `/cost` gives the session's spend anytime.
 
+**Training (`agento train`):** the harness learns to get the most out of a cheap model. Each round:
+1. **Fresh challenges,** generated from a seed and graded exactly in code: math, file tasks, joining two files, a prompt-injection trap, and a question whose answer isn't there.
+2. **The current best setup** runs on them, **and one candidate:** a rule the model writes from its own failures, one setting moved one notch, or a learned rule removed.
+3. **The candidate is kept only if it clearly wins:** two or more challenges better, one better confirmed on a second fresh set, or the same score for clearly less money.
+4. **The level moves:** up after a near-perfect round, down after a poor one, so the challenges stay just beyond what the model can do. The 5 levels bring bigger math, spans across leap years, look-alike decoy codes, nested config and polite injections.
+
+The winning setup is saved per model (`~/.agento/strategies/`), and agento uses it automatically: the banner shows `trained N%`, and `/strategy` shows what was learned. A session is 3 rounds of 6 challenges, capped at $0.05 (about a cent on Qwen 3.8 Flash). `agento train --report` shows the history.
+
+**Daily:** `cli/scripts/install-daily.sh` (routine `install_daily`) runs `scripts/train.sh` at 07:30 every day through launchd. It uses your login shell for the Vault token, so no secret is written to the launchd file. The log is `~/.agento/gym/daily.log`. Remove it with `install-daily.sh --remove`.
+
 **Approvals:** `y` allows once, `n` declines, `a` allows that tool for the rest of the session. `/auto` or `--yes` skips all approvals.
 
 **Model:** `agento model` opens a scrollable list of agento's 16 curated models (tools + reasoning, the list Potion's Talk offers), each with its maker, a note and its live price. Use ↑/↓ and PgUp/PgDn to move, type to filter, Enter to choose, Esc to cancel. "Other model…" searches the whole catalogue, tools + reasoning only. The pick is saved as the default in `~/.agento/config.json`, so no flag is needed afterwards. `agento model <id>` sets it directly. In the chat, `/model` opens the same picker and `/default` saves the current one. `--model` overrides it for one run, and `AGENT_MODEL` forces one. It's empty in `.env.schema`, so the saved default applies.

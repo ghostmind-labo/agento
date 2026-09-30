@@ -77,7 +77,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
   assert.equal(await code(openrouter({ apiKey: 'k' }).chat({ messages: [] })), 'no_model');
   for (const [status, want] of [[402, 'credits'], [401, 'auth'], [403, 'auth'], [500, 'failed']] as const) {
     const m = mock(() => json({ error: { message: 'nope' } }, status));
-    assert.equal(await code(openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch }).chat({ messages: [] })), want);
+    assert.equal(await code(openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch, retryDelayMs: 1 }).chat({ messages: [] })), want);
   }
   ok('errors carry codes');
 }
@@ -132,6 +132,35 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
   await openrouter({ apiKey: 'k', model: 'm', fetch: m.fetch, retryDelayMs: 1 }).chat({ messages: [] }).catch(() => {});
   assert.equal(calls, 1, 'a 400 is not retried');
   ok('retries: 429, error-on-200, stream before text; gives up with rate_limited; 400 not retried');
+}
+
+// 7 · a dropped connection is retried (longer than a rate limit), then reported as 'network' — never a bare TypeError
+{
+  let calls = 0;
+  const drop = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } });
+  const flaky = (async () => {
+    if (++calls < 3) throw drop();
+    return json({ model: 'm', choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }], usage: { cost: 0 } });
+  }) as unknown as typeof globalThis.fetch;
+  const r = await openrouter({ apiKey: 'k', model: 'm', fetch: flaky, retryDelayMs: 1 }).chat({ messages: [] });
+  assert.equal(r.message.content, 'hi');
+  assert.equal(calls, 3, 'two dropped connections, then an answer');
+
+  calls = 0;
+  const dead = (async () => { calls++; throw drop(); }) as unknown as typeof globalThis.fetch;
+  const err = await openrouter({ apiKey: 'k', model: 'm', fetch: dead, retries: 2, retryDelayMs: 1 }).chat({ messages: [] }).catch((e: unknown) => e);
+  assert.ok(err instanceof ModelError && err.code === 'network');
+  assert.match((err as Error).message, /Cannot reach OpenRouter \(ENOTFOUND\).*\(after 2 retries\)$/);
+  assert.equal(calls, 3);
+
+  // The caller's own abort is not a network problem and is not retried.
+  calls = 0;
+  const ac = new AbortController();
+  const aborting = (async () => { calls++; ac.abort(); throw new DOMException('aborted', 'AbortError'); }) as unknown as typeof globalThis.fetch;
+  const aborted = await openrouter({ apiKey: 'k', model: 'm', fetch: aborting, retryDelayMs: 1 }).chat({ messages: [], signal: ac.signal }).catch((e: unknown) => e);
+  assert.ok(!(aborted instanceof ModelError), 'the abort surfaces as itself');
+  assert.equal(calls, 1);
+  ok('network errors: retried, then code network; an abort is left alone');
 }
 
 console.log(`${n} cases`);

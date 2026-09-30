@@ -9,7 +9,7 @@ const { scriptedModel } = await import('../src/index.ts');
 const { challenges, MAX_LEVEL, numbersIn, rng } = await import('../src/cli/gym/challenges.ts');
 const { baseline, describeChange, loadStrategy, saveStrategy } = await import('../src/cli/gym/strategy.ts');
 const { better, compare, evaluate, nextLevel, proposeRule, train, tweak } = await import('../src/cli/gym/train.ts');
-const { readHistory, report } = await import('../src/cli/gym/command.ts');
+const { readHistory, report, waitForNetwork } = await import('../src/cli/gym/command.ts');
 const { createSession } = await import('../src/cli/session.ts');
 
 let n = 0;
@@ -161,7 +161,7 @@ for (const level of [1, MAX_LEVEL]) {
   const model = 'stub/cheap';
   const fakeEval = async (_p: unknown, s: { rules: string[]; guidance: unknown }) => {
     const score = s.rules.some(r => r.includes('shell')) ? 1 : 0.5;
-    return { score, cost: 0.001, steps: 6, cut: false, attempts: [{ id: 'a', kind: 'math', goal: 'g', score: score === 1 ? 1 : 0, why: 'wrong', answer: 'x', calls: [], cost: 0.001, steps: 3, status: 'done' }] };
+    return { score, voided: 0, cost: 0.001, steps: 6, cut: false, attempts: [{ id: 'a', kind: 'math', goal: 'g', score: score === 1 ? 1 : 0, why: 'wrong', answer: 'x', calls: [], cost: 0.001, steps: 3, status: 'done' }] };
   };
   const rules = scriptedModel(Array.from({ length: 10 }, () => 'Use the shell to compute any arithmetic before answering.'), { decide: false });
   const r = await train({ provider: rules, model, rounds: 4, size: 2, maxUsd: 1, seed: 1234, evaluate: fakeEval as never });
@@ -200,6 +200,73 @@ for (const level of [1, MAX_LEVEL]) {
   assert.match(String(provider.requests[0]!.messages[0]!.content), /Always read a file before editing it\./);
   assert.ok(existsSync(join(process.env.AGENTO_HOME!, 'strategies', 'stub_worker.json')));
   ok('strategy applied in the chat');
+}
+
+// 10 · errors are not failures: a model that cannot be reached is void, never a score of 0
+{
+  const down = scriptedModel([() => { throw new TypeError('fetch failed'); }, () => { throw new TypeError('fetch failed'); }], { decide: false });
+  const set = challenges(11, 2);
+  const e = await evaluate(down, baseline('stub/worker'), set, { budget: () => 1, perChallengeUsd: 0.01 });
+  assert.equal(e.voided, 2);
+  assert.ok(e.attempts.every(a => a.void && a.status === 'error'));
+  assert.equal(e.score, 0, 'nothing measured: no score to trust');
+
+  // A mix: the one that ran is scored on its own, the error is left out of the average.
+  const mixed = scriptedModel([() => { throw new TypeError('fetch failed'); }, { text: 'no idea', cost: 0.001 }], { decide: false });
+  const m = await evaluate(mixed, baseline('stub/worker'), set, { budget: () => 1, perChallengeUsd: 0.01 });
+  assert.equal(m.voided, 1);
+  assert.equal(m.attempts.filter(a => !a.void).length, 1);
+  ok('evaluate: errors are void, excluded from the score');
+}
+
+// 11 · a void round changes nothing: level, score and rules stay; two void rounds in a row stop the run
+{
+  const model = 'stub/outage';
+  saveStrategy({ ...baseline(model), guidance: 'off', level: 4, score: 1, rounds: 3 });
+  let evaluations = 0;
+  const offline = async () => {
+    evaluations++;
+    return { score: 0, voided: 3, cost: 0, steps: 0, cut: false, attempts: [{ id: 'x', kind: 'math', goal: 'g', score: 0, why: 'error: fetch failed', answer: null, calls: [], cost: 0, steps: 0, status: 'error', void: true }] };
+  };
+  const seen: boolean[] = [];
+  const r = await train({ provider: scriptedModel([], { decide: false }), model, rounds: 5, size: 3, maxUsd: 1, seed: 7, evaluate: offline as never, onRound: x => void seen.push(!!x.void) });
+  assert.equal(r.rounds.length, 2, 'gave up after two void rounds in a row');
+  assert.deepEqual(seen, [true, true]);
+  assert.equal(evaluations, 2, 'no candidate was spent on once the champion could not be measured');
+  const kept = loadStrategy(model)!;
+  assert.equal(kept.level, 4, 'the level did not drop');
+  assert.equal(kept.score, 1, 'the score did not become 0');
+  assert.equal(kept.rounds, 3, 'no round counted against it');
+  assert.ok(readHistory(model).every(x => x.void === true));
+  let text = '';
+  report(model, s => (text += s));
+  assert.match(text, /void/);
+
+  // A candidate that hits errors voids the round too, even though the champion was measured.
+  saveStrategy({ ...baseline(model), level: 2, score: 0.8, rounds: 1 });
+  let calls = 0;
+  const flaky = async (_p: unknown, s: { guidance: unknown }) => {
+    calls++;
+    return calls === 1
+      ? { score: 0.8, voided: 0, cost: 0.001, steps: 4, cut: false, attempts: [{ id: 'a', kind: 'math', goal: 'g', score: 0, why: 'wrong', answer: 'x', calls: [], cost: 0, steps: 1, status: 'done' }] }
+      : { score: 1, voided: 1, cost: 0.001, steps: 4, cut: false, attempts: [{ id: 'a', kind: 'math', goal: 'g', score: 0, why: 'error: fetch failed', answer: null, calls: [], cost: 0, steps: 0, status: 'error', void: true }] };
+  };
+  const v = await train({ provider: scriptedModel(Array.from({ length: 3 }, () => 'Always check your arithmetic with the shell first.'), { decide: false }), model, rounds: 1, size: 3, maxUsd: 1, seed: 9, evaluate: flaky as never });
+  assert.equal(v.rounds[0]!.void, true);
+  assert.equal(v.rounds[0]!.kept, false);
+  assert.deepEqual(loadStrategy(model)?.rules, [], 'a candidate measured through errors is never kept');
+  assert.equal(loadStrategy(model)?.level, 2);
+  ok('void rounds: nothing saved, nothing learned, stops after two');
+}
+
+// 12 · waiting for the network: returns as soon as it is up, and gives up when it never is
+{
+  let probes = 0;
+  assert.equal(await waitForNetwork(1000, async () => ++probes >= 3, 1), true);
+  assert.equal(probes, 3);
+  assert.equal(await waitForNetwork(20, async () => false, 5), false);
+  assert.equal(await waitForNetwork(20, async () => { throw new Error('offline'); }, 5), false, 'a probe that throws is "not yet"');
+  ok('waitForNetwork');
 }
 
 console.log(`${n} cases`);

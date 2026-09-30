@@ -316,6 +316,9 @@ async function turn(text: string) {
     if (error instanceof ModelError && error.code === 'rate_limited') {
       out(`${c.yellow(`${labelOf(session.model ?? '')} is rate-limited by its provider right now`)} ${c.dim('(retried 3 times). Try again in a moment, or /model to switch.')}\n`);
       if (print.style === 'verbose') out(c.dim(`${error.message}\n`));
+    } else if (error instanceof ModelError && error.code === 'network') {
+      out(`${c.yellow("can't reach OpenRouter")} ${c.dim('(retried 3 times). Check your connection and try again.')}\n`);
+      if (print.style === 'verbose') out(c.dim(`${error.message}\n`));
     } else out(`${c.red('error')} ${error instanceof Error ? error.message : String(error)}\n`);
     return null;
   } finally {

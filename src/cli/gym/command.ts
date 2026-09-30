@@ -53,7 +53,7 @@ export function report(model: string | undefined, out: (s: string) => void): num
   }
   const rows = rounds.map(
     r =>
-      `| ${r.at.slice(0, 16).replace('T', ' ')} | ${labelOf(r.model)} | L${r.level ?? 1} | ${pct(r.champion.score)} | ${r.candidate ? pct(r.candidate.score) : '—'} | ${r.kept ? '**kept**' : 'dropped'} | ${r.change.replace(/\|/g, '/')} |`
+      `| ${r.at.slice(0, 16).replace('T', ' ')} | ${labelOf(r.model)} | L${r.level ?? 1} | ${r.void ? '—' : pct(r.champion.score)} | ${r.candidate && !r.void ? pct(r.candidate.score) : '—'} | ${r.void ? 'void' : r.kept ? '**kept**' : 'dropped'} | ${r.change.replace(/\|/g, '/')} |`
   );
   out(renderMarkdown(`| When | Model | Level | Champion | Candidate | | Change tried |\n|---|---|:-:|--:|--:|---|---|\n${rows.join('\n')}\n`, { color, width: width() }));
   const s = model ? loadStrategy(model) : null;
@@ -64,11 +64,26 @@ export function report(model: string | undefined, out: (s: string) => void): num
   return 0;
 }
 
+/** True once OpenRouter answers. A Mac waking at 07:30 often has no network for the first seconds. */
+export async function waitForNetwork(maxMs = 120_000, probe: () => Promise<boolean> = async () => (await fetch('https://openrouter.ai/api/v1/models', { method: 'HEAD', signal: AbortSignal.timeout(8000) })).ok, pauseMs = 5000): Promise<boolean> {
+  const until = Date.now() + maxMs;
+  for (;;) {
+    if (await probe().catch(() => false)) return true;
+    if (Date.now() + pauseMs >= until) return false;
+    await new Promise(r => setTimeout(r, pauseMs));
+  }
+}
+
 export async function runTraining(o: TrainingCommand): Promise<number> {
   if (o.report) return report(o.model, o.out);
   if (!process.env.OPENROUTER_API_KEY) {
     o.out('OPENROUTER_API_KEY is not set. Export it, or in the agent repo run cli/scripts/train.sh (varlock).\n');
     return 2;
+  }
+  if (!(await waitForNetwork())) {
+    // Nothing was measured, so nothing is saved: the champion, its level and its score stay as they are.
+    o.out('skipped: OpenRouter is not reachable (waited 2 minutes). Nothing was changed; the next run tries again.\n');
+    return 0;
   }
   let model = o.model;
   if (!model) {
@@ -99,6 +114,10 @@ export async function runTraining(o: TrainingCommand): Promise<number> {
     },
     onRound: r => {
       if (process.stdout.isTTY) o.out('\r\x1b[2K');
+      if (r.void) {
+        o.out(`round ${r.round}  L${r.level}  ${c.yellow('void')}  ${c.dim('the model could not be reached — nothing changed')}\n`);
+        return;
+      }
       const verdict = r.kept ? c.green('kept   ') : c.dim('dropped');
       o.out(`round ${r.round}  L${r.level}  champion ${pct(r.champion.score).padStart(4)}  candidate ${(r.candidate ? pct(r.candidate.score) : '—').padStart(4)}  ${verdict}${r.confirmed !== undefined ? c.dim(r.confirmed ? ' (confirmed)' : ' (not confirmed)') : ''}  ${c.dim(r.change.slice(0, 80))}\n`);
     },

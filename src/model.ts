@@ -112,7 +112,7 @@ export interface ModelProvider {
   card?(model: string, signal?: AbortSignal): Promise<ModelCard | null>;
 }
 
-export type ModelErrorCode = 'no_key' | 'no_model' | 'credits' | 'auth' | 'rate_limited' | 'failed' | 'no_answer';
+export type ModelErrorCode = 'no_key' | 'no_model' | 'credits' | 'auth' | 'rate_limited' | 'network' | 'failed' | 'no_answer';
 
 /** Every failure of a model call. `code` is what an app maps to its own message or HTTP status. */
 export class ModelError extends Error {
@@ -145,7 +145,7 @@ export interface OpenRouterConfig {
   decisionModel?: string;
   /** Extra headers, e.g. OpenRouter's `HTTP-Referer` / `X-Title` app attribution. */
   headers?: Record<string, string>;
-  /** Retries for rate limits and passing provider errors (408, 429, 5xx). Default 3. */
+  /** Retries for rate limits, passing provider errors (408, 429, 5xx) and dropped connections. Default 3. */
   retries?: number;
   /** The first backoff; it doubles each try (capped at 8 s) unless the provider sends Retry-After. Default 600 ms. */
   retryDelayMs?: number;
@@ -237,7 +237,8 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
         if (n >= retries) {
           throw new ModelError(error.code, `${error.message} (after ${retries} ${retries === 1 ? 'retry' : 'retries'})`, { status: error.status, cause: error });
         }
-        await sleep(error.retryAfterMs ?? Math.min(baseDelay * 2 ** n, 8000), signal);
+        // A dropped connection (a laptop waking up) needs longer than a rate limit to come back.
+        await sleep(error.retryAfterMs ?? (error.code === 'network' ? Math.min(baseDelay * 3 * 2 ** n, 15_000) : Math.min(baseDelay * 2 ** n, 8000)), signal);
       }
     }
   };
@@ -248,9 +249,21 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
     return { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...config.headers };
   };
 
+  /** fetch, with a dropped connection turned into a retryable ModelError (an abort by the caller is left alone). */
+  const send = async (url: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await doFetch(url, init);
+    } catch (error) {
+      if (init.signal?.aborted) throw error;
+      const code = (error as { cause?: { code?: string } })?.cause?.code;
+      const why = code ?? (error instanceof Error ? error.message : String(error));
+      throw new ModelError('network', `Cannot reach OpenRouter (${why}). Check the connection.`, { retryable: true, cause: error });
+    }
+  };
+
   const post = <T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> =>
     withRetry(async () => {
-      const res = await doFetch(`${base}${path}`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal });
+      const res = await send(`${base}${path}`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal });
       if (!res.ok) throw await refusal(res);
       const json = (await res.json().catch(() => null)) as (T & { error?: OpenRouterErrorBody }) | null;
       if (!json || json.error) {
@@ -265,7 +278,7 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
 
   /** One streamed attempt. A failure is retryable only until the first text or call arrives. */
   const streamOnce = async (body: Record<string, unknown>, onDelta: (text: string) => void, signal?: AbortSignal): Promise<ChatReply> => {
-    const res = await doFetch(`${base}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify({ ...body, stream: true }), signal });
+    const res = await send(`${base}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify({ ...body, stream: true }), signal });
     if (!res.ok || !res.body) throw await refusal(res);
 
     let content = '';

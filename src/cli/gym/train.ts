@@ -41,10 +41,17 @@ export interface Attempt {
   cost: number;
   steps: number;
   status: string;
+  /**
+   * The attempt never measured the model: the model call failed (no network, a provider outage) after
+   * its retries. A void attempt is not a failure of the strategy, so it is not scored and not learned from.
+   */
+  void?: boolean;
 }
 
 export interface Evaluation {
   score: number;
+  /** Attempts that did not measure anything (see Attempt.void). Their round decides nothing. */
+  voided: number;
   cost: number;
   steps: number;
   attempts: Attempt[];
@@ -85,14 +92,16 @@ export async function evaluate(
         onEvent: e => void (e.type === 'tool_call' && calls.push(`${e.name}(${JSON.stringify(e.args).slice(0, 80)})`)),
       }).catch(error => ({ status: 'error', answer: null, cost: 0, steps: 0, reason: error instanceof Error ? error.message : String(error) }));
       const grade = r.status === 'error' ? { score: 0, why: `error: ${(r as { reason: string }).reason.slice(0, 120)}` } : ch.check(r.answer, dir);
-      attempts.push({ id: ch.id, kind: ch.kind, goal: ch.goal, score: grade.score, why: grade.why, answer: r.answer?.slice(0, 400) ?? null, calls, cost: r.cost, steps: r.steps, status: r.status });
+      attempts.push({ id: ch.id, kind: ch.kind, goal: ch.goal, score: grade.score, why: grade.why, answer: r.answer?.slice(0, 400) ?? null, calls, cost: r.cost, steps: r.steps, status: r.status, ...(r.status === 'error' ? { void: true } : {}) });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
-  const n = Math.max(1, attempts.length);
+  const measured = attempts.filter(a => !a.void);
+  const n = Math.max(1, measured.length);
   return {
-    score: attempts.reduce((a, t) => a + t.score, 0) / n,
+    score: measured.reduce((a, t) => a + t.score, 0) / n,
+    voided: attempts.length - measured.length,
     cost: attempts.reduce((a, t) => a + t.cost, 0),
     steps: attempts.reduce((a, t) => a + t.steps, 0),
     attempts,
@@ -172,6 +181,8 @@ export interface Round {
   champion: { score: number; cost: number };
   candidate: { score: number; cost: number } | null;
   kept: boolean;
+  /** The round measured nothing (the model could not be reached): no comparison, no level move, nothing saved. */
+  void?: boolean;
   spent: number;
   failures: { id: string; why: string }[];
 }
@@ -201,6 +212,29 @@ export async function train(o: TrainOptions): Promise<{ champion: Strategy; roun
   const base = o.seed ?? Math.floor(Date.now() / 1000);
   const log = join(home(), 'gym', 'history.jsonl');
   mkdirSync(join(home(), 'gym'), { recursive: true });
+  let voidStreak = 0;
+
+  /** A round that measured nothing: recorded, but the champion, its level and its score stay as they were. */
+  const voidRound = (i: number, seed: number, level: number, change: string, champ: Evaluation, cand: Evaluation | null) => {
+    const round: Round = {
+      at: new Date().toISOString(),
+      round: i + 1,
+      seed,
+      model: o.model,
+      change,
+      level,
+      void: true,
+      champion: { score: champ.score, cost: champ.cost },
+      candidate: cand ? { score: cand.score, cost: cand.cost } : null,
+      kept: false,
+      spent,
+      failures: [...champ.attempts, ...(cand?.attempts ?? [])].filter(a => a.void).map(a => ({ id: a.id, why: a.why })).slice(0, 4),
+    };
+    appendFileSync(log, `${JSON.stringify(round)}\n`);
+    rounds.push(round);
+    o.onRound?.(round, champion);
+    return ++voidStreak >= 2;
+  };
 
   for (let i = 0; i < o.rounds && left() > 0 && !o.signal?.aborted; i++) {
     const seed = base + i * 7919;
@@ -212,9 +246,15 @@ export async function train(o: TrainOptions): Promise<{ champion: Strategy; roun
     const champ = await run(o.provider, champion, set, opts);
     spent += champ.cost;
     if (champ.cut) break;
+    // Errors are not failures: if the model could not be reached, nothing here measured it. Stop
+    // spending on this round, change nothing, and give up after two such rounds in a row.
+    if (champ.voided > 0) {
+      if (voidRound(i, seed, level, 'the model could not be reached', champ, null)) break;
+      continue;
+    }
 
     // A candidate: a rule from the failures when there are any, otherwise a tweak or a prune.
-    const failures = champ.attempts.filter(a => a.score < 1);
+    const failures = champ.attempts.filter(a => !a.void && a.score < 1);
     const r = rng(seed ^ 0x5bd1e995);
     let candidate: Strategy;
     if (failures.length && r.next() < 0.6) {
@@ -231,6 +271,11 @@ export async function train(o: TrainOptions): Promise<{ champion: Strategy; roun
     o.onProgress?.(`round ${i + 1}: candidate (${change})`);
     const cand = left() > 0 ? await run(o.provider, candidate, set, opts) : null;
     if (cand) spent += cand.cost;
+    if (cand && cand.voided > 0) {
+      if (voidRound(i, seed, level, change, champ, cand)) break;
+      continue;
+    }
+    voidStreak = 0;
     const complete = cand && !cand.cut;
     let verdict = complete ? compare(cand, champ) : 'no';
     let confirmed: boolean | undefined;
@@ -242,7 +287,8 @@ export async function train(o: TrainOptions): Promise<{ champion: Strategy; roun
       spent += champ2.cost;
       const cand2 = left() > 0 && !champ2.cut ? await run(o.provider, candidate, set2, opts) : null;
       if (cand2) spent += cand2.cost;
-      confirmed = !!cand && !!cand2 && !cand2.cut && cand.score + cand2.score > champ.score + champ2.score + 1e-9;
+      // A confirmation that could not run (or ran into errors) confirms nothing: the change is dropped.
+      confirmed = !!cand && !!cand2 && !cand2.cut && champ2.voided + cand2.voided === 0 && cand.score + cand2.score > champ.score + champ2.score + 1e-9;
       verdict = confirmed ? 'clear' : 'no';
     }
     const kept = verdict === 'clear';

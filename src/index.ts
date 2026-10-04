@@ -1,5 +1,5 @@
 /**
- * @ghostmind-dev/agent — the engine every app builds its own agent from.
+ * @ghostmind-dev/agento — the engine every app builds its own agent from.
  *
  * The package is the loop and what it needs to run safely: the model seam (a worker through
  * OpenRouter, Jev for decisions), budgets with a USD cap, go/pause/stop hooks, an append-only event

@@ -1,6 +1,6 @@
 # agent CLI
 
-How to run the `agento` command **from this repo**. The command itself lives in `src/cli/` and ships in the npm package (`npx @ghostmind-dev/agent`). This folder only adds the local setup: the key from Vault through varlock, and running from source, so an engine change is testable the moment it's saved, with no build and no publish.
+How to run the `agento` command **from this repo**. The command itself lives in `src/cli/` and ships in the npm package (`npx @ghostmind-dev/agento`). This folder only adds the local setup: the key from Vault through varlock, and running from source, so an engine change is testable the moment it's saved, with no build and no publish.
 
 ```bash
 alias agento=/Volumes/Projects/labo/agent/cli/scripts/agento.sh   # once, in your shell profile

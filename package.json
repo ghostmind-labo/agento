@@ -1,7 +1,7 @@
 {
-  "name": "@ghostmind-dev/agent",
-  "version": "0.2.6",
-  "description": "The agent engine every app builds its own agent from: the tool loop and its guards, a model seam (OpenRouter + Jev), the Jev guide, budgets with a USD cap, go/pause/stop hooks, and an append-only event log. A library, plus the `agento` command line to try it.",
+  "name": "@ghostmind-dev/agento",
+  "version": "0.3.0",
+  "description": "agento: the agent engine (tool loop and guards, Jev as the guide, USD budgets, go/pause/stop hooks, an append-only event log) as a library, plus the `agento` command: a terminal agent that also runs in editors and chats over the Agent Client Protocol.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -30,7 +30,9 @@
     "agent-skills",
     "hooks",
     "budget",
-    "cli"
+    "cli",
+    "acp",
+    "agent-client-protocol"
   ],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",

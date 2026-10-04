@@ -1,4 +1,4 @@
-# @ghostmind-dev/agent
+# @ghostmind-dev/agento
 
 The engine every app builds its own agent from. The loop, and everything it needs to run safely:
 
@@ -11,7 +11,7 @@ The engine every app builds its own agent from. The loop, and everything it need
 It is a **library**: import it, give it tools, run it. No server, no service, no connection to call. Zero runtime dependencies, Node ≥ 22.18, one credential: `OPENROUTER_API_KEY`.
 
 ```
-            @ghostmind-dev/agent   (engine: loop, model + Jev, guide, budget, hooks, events)
+            @ghostmind-dev/agento   (engine: loop, model + Jev, guide, budget, hooks, events)
              /                    |                        \
    a node in ensemble      the `agento` command     imported by an app (Potion, later)
 ```
@@ -23,7 +23,7 @@ It is a **library**: import it, give it tools, run it. No server, no service, no
 ## Quick start
 
 ```ts
-import { openrouter, runAgent, type AgentTool } from '@ghostmind-dev/agent';
+import { openrouter, runAgent, type AgentTool } from '@ghostmind-dev/agento';
 
 const weather: AgentTool = {
   name: 'get_weather',
@@ -139,7 +139,7 @@ The package ships a terminal chat on the core, in the spirit of opencode. Use it
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
-npm install -g @ghostmind-dev/agent     # the command is `agento` (or: npx @ghostmind-dev/agent …)
+npm install -g @ghostmind-dev/agento     # the command is `agento` (or: npx @ghostmind-dev/agento …)
 agento model                            # pick from agento's short list (↑↓, type to filter), saved as the default
 agento                                  # chat in the current folder
 agento -p "what does this repo do?"     # one turn, then exit
@@ -159,7 +159,7 @@ Answers render as markdown in the terminal, including box-drawn tables fitted to
 `agento acp` runs agento as an **ACP agent**: the Agent Client Protocol, an open standard (created by Zed, adopted by JetBrains and others) that lets a host launch any agent over stdio, the way editors launch language servers. Any ACP host can then use agento, with its tools, approvals, Jev guide and your choice of model.
 
 ```bash
-npm install -g @ghostmind-dev/agent
+npm install -g @ghostmind-dev/agento
 ```
 
 | Host | Configuration |

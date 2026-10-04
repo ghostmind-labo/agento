@@ -1,0 +1,79 @@
+# Publish to npm when a merge to main raises the version in package.json. Nothing else publishes.
+#
+# No npm token is stored anywhere: npm "trusted publishing" lets this workflow prove which repo and
+# workflow it is (OIDC), and the package is published with provenance. One-time setup, by the package
+# owner (needs your npm login and 2FA):
+#
+#   npm trust github @ghostmind-dev/agento --file publish.yaml --repo ghostmind-labo/agento --allow-publish
+#
+# If a release run fails (a test, the compliance kit), fix it on dev and ship again; to retry the same
+# commit, use "Re-run jobs" on the run, or Actions → Publish to npm → Run workflow.
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write # the version tag and the GitHub release
+  id-token: write # trusted publishing + provenance
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # its npm supports trusted publishing, and Node runs the .mts tests as they are
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Is this version already on npm?
+        id: version
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$name@$version is already on npm: nothing to publish."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "$name@$version is new: publishing."
+          fi
+
+      - name: Install
+        if: steps.version.outputs.published == 'false'
+        run: npm ci
+
+      - name: Typecheck and test (offline suites)
+        if: steps.version.outputs.published == 'false'
+        run: |
+          npm run typecheck
+          npm test
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.version.outputs.published == 'false'
+
+      - name: ACP compliance kit
+        if: steps.version.outputs.published == 'false'
+        run: npm run tck
+
+      - name: Publish
+        if: steps.version.outputs.published == 'false'
+        run: npm publish --access public # trusted publishing: no token; provenance is added automatically
+
+      - name: Tag and release
+        if: steps.version.outputs.published == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ steps.version.outputs.version }}" --target "$GITHUB_SHA" --title "v${{ steps.version.outputs.version }}" --generate-notes

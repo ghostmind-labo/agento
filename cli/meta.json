@@ -17,7 +17,7 @@
   "herdr": {
     "workspaces": [
       {
-        "label": "agent",
+        "label": "agento",
         "tabs": [
           {
             "label": "cli",

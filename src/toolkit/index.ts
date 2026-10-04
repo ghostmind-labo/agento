@@ -18,20 +18,29 @@ import { shellToolset } from './shell.ts';
 import { webToolset, type WebOptions } from './web.ts';
 
 export interface StandardToolsOptions {
-  /** The working directory every file path and command is confined to. */
-  root: string;
+  /** The working directory every file path and command is confined to. Needed unless both `files` and `shell` are off. */
+  root?: string;
   /** Include the shell (run_command). Default true; each command still needs approval. */
   shell?: boolean;
   /** Include web_search and web_fetch. Default true. */
   web?: boolean;
-  files?: FileToolsetOptions;
+  /** The file tools: `false` leaves them out (a web-only agent), or pass options such as `{ ripgrep: false }`. */
+  files?: FileToolsetOptions | false;
   /** Search backend, private-address policy and so on. */
   webOptions?: WebOptions;
 }
 
 /** list_dir, read_file, glob, search, write_file, edit_file · run_command · web_search, web_fetch. */
-export function standardToolsets(o: StandardToolsOptions): Toolset[] {
-  return [fileToolset(o.root, o.files), ...(o.shell === false ? [] : [shellToolset(o.root)]), ...(o.web === false ? [] : [webToolset(o.webOptions)])];
+export function standardToolsets(o: StandardToolsOptions = {}): Toolset[] {
+  const withFiles = o.files !== false;
+  const withShell = o.shell !== false;
+  if ((withFiles || withShell) && !o.root) throw new Error('standardToolsets needs `root` for the file and shell tools (or pass files: false and shell: false)');
+  const root = o.root ?? '';
+  return [
+    ...(withFiles ? [fileToolset(root, o.files || undefined)] : []),
+    ...(withShell ? [shellToolset(root)] : []),
+    ...(o.web === false ? [] : [webToolset(o.webOptions)]),
+  ];
 }
 
 export { fileToolset, inside, walkFiles, globToRegExp, nodeSearch } from './files.ts';

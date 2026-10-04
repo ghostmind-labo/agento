@@ -15,6 +15,7 @@
  * Everything a page says is DATA, not instructions (the engine's system rules say so): a fetched
  * page can still lie, so answers should name the URLs they rest on.
  */
+import { lookup } from 'node:dns/promises';
 import type { AgentTool, Toolset } from '../index.ts';
 
 /** Finds pages for a query and returns them as text for the model: title, URL, highlights. */
@@ -25,6 +26,8 @@ export interface WebOptions {
   search?: SearchBackend;
   /** Fetch pages on localhost and private networks. Default false. */
   allowPrivate?: boolean;
+  /** The addresses a hostname points to. Default: the system resolver. Hand one in for tests or a custom resolver. */
+  resolve?: (hostname: string) => Promise<string[]>;
   /** For tests, or to route through a proxy. */
   fetch?: typeof globalThis.fetch;
   userAgent?: string;
@@ -80,11 +83,17 @@ export function exaSearch(options: ExaOptions = {}): SearchBackend {
 
 // ── addresses we will not fetch ─────────────────────────────────────────────
 
-/** True for localhost, loopback, link-local, private-network and `.local` / `.internal` hosts. A name that merely RESOLVES to such an address is not caught. */
+/**
+ * True for localhost, loopback, link-local, private-network and `.local` / `.internal` hosts, and for
+ * any single-label name (`api`, `db`): a public host always has a dot, so a bare name can only be
+ * resolved on the machine's own network, which is where an internal service answers to its short name.
+ * This looks at the NAME or address literal only; `web_fetch` also checks what a name resolves to.
+ */
 export function isPrivateHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (!h) return true;
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return true;
+  if (!h.includes('.') && !h.includes(':')) return true;
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan') || h.endsWith('.localdomain')) return true;
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
   if (v4) {
     const [a, b] = [Number(v4[1]), Number(v4[2])];
@@ -179,6 +188,8 @@ export function webToolset(options: WebOptions = {}): Toolset {
   const doFetch = options.fetch ?? globalThis.fetch;
   const search = options.search ?? exaSearch({ fetch: options.fetch });
   const agent = options.userAgent ?? 'Mozilla/5.0 (compatible; agento/1.0; +https://github.com/ghostmind-labo/agento)';
+  const resolve = options.resolve ?? (async (host: string) => (await lookup(host, { all: true })).map(a => a.address));
+  const literal = (h: string) => h.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
 
   /** GET with redirects followed by hand, so each hop is checked. */
   async function get(url: string, signal: AbortSignal, timeoutMs: number): Promise<{ res: Response; finalUrl: string }> {
@@ -191,7 +202,16 @@ export function webToolset(options: WebOptions = {}): Toolset {
         throw new Error(`"${current}" is not a valid URL`);
       }
       if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error(`Only http and https pages can be fetched (got ${u.protocol})`);
-      if (!options.allowPrivate && isPrivateHost(u.hostname)) throw new Error(`${u.hostname} is a local or private address; fetching it is not allowed here`);
+      if (!options.allowPrivate) {
+        if (isPrivateHost(u.hostname)) throw new Error(`${u.hostname} is a local or private address; fetching it is not allowed here`);
+        // A public-looking name can still point at a private address: look before connecting. (A name that
+        // changes its answer between this look and the connection is not caught: also deny that network
+        // path at the firewall when this runs for people you do not trust.)
+        if (!literal(u.hostname)) {
+          const private_ = (await resolve(u.hostname).catch(() => [])).find(isPrivateHost);
+          if (private_) throw new Error(`${u.hostname} resolves to a private address (${private_}); fetching it is not allowed here`);
+        }
+      }
       const res = await doFetch(current, {
         redirect: 'manual',
         headers: { 'User-Agent': agent, Accept: 'text/html,application/xhtml+xml,text/markdown,text/plain,application/json;q=0.9,*/*;q=0.5' },

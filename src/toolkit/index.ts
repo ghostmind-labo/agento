@@ -46,5 +46,5 @@ export function standardToolsets(o: StandardToolsOptions = {}): Toolset[] {
 export { fileToolset, inside, walkFiles, globToRegExp, nodeSearch } from './files.ts';
 export type { FileToolsetOptions } from './files.ts';
 export { shellToolset, runCommand } from './shell.ts';
-export { webToolset, exaSearch, mcpReplyText, htmlToMarkdown, htmlToText, isPrivateHost, decodeEntities } from './web.ts';
+export { webToolset, exaSearch, mcpReplyText, htmlToMarkdown, htmlToText, isPrivateHost, parseIPv6, decodeEntities } from './web.ts';
 export type { WebOptions, SearchBackend, ExaOptions } from './web.ts';

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { exaSearch, fileToolset, globToRegExp, htmlToMarkdown, htmlToText, isPrivateHost, mcpReplyText, nodeSearch, standardToolsets, webToolset } from '../src/toolkit/index.ts';
+import { exaSearch, fileToolset, globToRegExp, htmlToMarkdown, htmlToText, isPrivateHost, mcpReplyText, nodeSearch, parseIPv6, standardToolsets, webToolset } from '../src/toolkit/index.ts';
 
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
@@ -93,6 +93,25 @@ const files = fileToolset(root, { ripgrep: false });
   for (const h of ['api', 'db', 'postgres', 'printer', 'localhost.localdomain', 'localhost', 'app.localhost', 'printer.local', 'db.internal', '127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '[::1]', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1', '']) assert.ok(isPrivateHost(h), h);
   for (const h of ['example.com', '8.8.8.8', '172.32.0.1', '172.15.0.1', '100.63.0.1', 'localhost.example.com', '2606:4700::1111']) assert.ok(!isPrivateHost(h), h);
   ok('isPrivateHost');
+}
+
+// 5b · IPv6: private addresses hide inside other forms. The URL parser rewrites ::ffff:127.0.0.1 as ::ffff:7f00:1
+{
+  assert.deepEqual(parseIPv6('::1'), [0, 0, 0, 0, 0, 0, 0, 1]);
+  assert.deepEqual(parseIPv6('::ffff:127.0.0.1'), [0, 0, 0, 0, 0, 0xffff, 0x7f00, 1]);
+  assert.deepEqual(parseIPv6('2001:db8::8:800:200c:417a'), [0x2001, 0xdb8, 0, 0, 8, 0x800, 0x200c, 0x417a]);
+  assert.deepEqual(parseIPv6('fe80::1%eth0'), [0xfe80, 0, 0, 0, 0, 0, 0, 1], 'a zone id is dropped');
+  for (const bad of ['', ':::', '1::2::3', '1:2:3', '12345::1', 'g::1', '::ffff:999.0.0.1', '1:2:3:4:5:6:7:8:9']) assert.equal(parseIPv6(bad), null, bad);
+
+  const hostOf = (u: string) => new URL(u).hostname;
+  for (const u of [
+    'http://[::ffff:127.0.0.1]/', 'http://[::ffff:10.0.0.7]/', 'http://[::ffff:192.168.1.1]/', 'http://[::ffff:169.254.169.254]/', 'http://[::ffff:0:1]/',
+    'http://[64:ff9b::a00:1]/', 'http://[64:ff9b::7f00:1]/', 'http://[2002:7f00:1::]/', 'http://[2002:a9fe:a9fe::1]/',
+    'http://[::127.0.0.1]/', 'http://[::]/', 'http://[::1]/', 'http://[0:0:0:0:0:0:0:1]/', 'http://[fe80::1]/', 'http://[fec0::1]/', 'http://[fd12:3456::1]/', 'http://[ff02::1]/',
+  ]) assert.ok(isPrivateHost(hostOf(u)), `${u} → ${hostOf(u)}`);
+  for (const u of ['http://[::ffff:8.8.8.8]/', 'http://[64:ff9b::808:808]/', 'http://[2002:808:808::]/', 'http://[2606:4700::1111]/', 'http://[2001:4860:4860::8888]/']) assert.ok(!isPrivateHost(hostOf(u)), `${u} → ${hostOf(u)} is public`);
+  assert.ok(isPrivateHost('[::ffff:7f00:1]') && isPrivateHost('::ffff:7f00:1') && isPrivateHost('not:an:address'), 'bracketed or bare; an unparseable one is refused');
+  ok('isPrivateHost: IPv6 forms that wrap an IPv4 address, and fail-closed parsing');
 }
 
 // 6 · reading an MCP server's reply (the shape Exa sends)
@@ -211,6 +230,10 @@ const files = fileToolset(root, { ripgrep: false });
   await assert.rejects(run(web, 'web_fetch', { url: 'http://v6.example.com/' }), /resolves to a private address \(fd00::5\)/);
   await assert.rejects(run(web, 'web_fetch', { url: 'http://2130706433/' }), /127\.0\.0\.1 is a local or private address/, 'a decimal IP is read as the address it is');
   await assert.rejects(run(web, 'web_fetch', { url: 'http://0x7f.1/' }), /local or private address/);
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://[::ffff:127.0.0.1]/' }), /local or private address/, 'an IPv4 address wrapped in IPv6');
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://[::ffff:10.0.0.7]/' }), /local or private address/);
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://[::ffff:169.254.169.254]/latest/meta-data' }), /local or private address/, 'the cloud metadata address, wrapped');
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://user:secret@public.example.com/' }), /username or password is not allowed/);
   assert.deepEqual(reached, [], 'none of these was ever requested');
   assert.match(await run(web, 'web_fetch', { url: 'http://public.example.com/' }), /# internal/);
   assert.deepEqual(reached, ['http://public.example.com/']);

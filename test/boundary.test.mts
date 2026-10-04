@@ -1,6 +1,6 @@
 // The boundary rule, enforced: the engine never names an app, and has no runtime dependencies.
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,6 +48,18 @@ const sources = (dir = join(repo, 'src')): string[] =>
     assert.deepEqual(ids, [], `${file} hardcodes ${ids.join(', ')}`);
   }
   ok('no hardcoded model ids');
+}
+
+// 4 · the curated model list is a public subpath (the hosted product and other apps import it), and it works
+{
+  const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+  assert.deepEqual(pkg.exports['./models'], { types: './dist/cli/models.d.ts', import: './dist/cli/models.js' });
+  const built = join(repo, 'dist', 'cli', 'models.js');
+  if (existsSync(built)) {
+    const m = await import(built);
+    assert.ok(m.CURATED.length >= 10 && typeof m.labelOf === 'function' && typeof m.offered === 'function' && typeof m.STARTER === 'string');
+  }
+  ok('./models subpath');
 }
 
 console.log(`${n} cases`);

@@ -154,9 +154,11 @@ runAgent({ provider, task, toolsets: standardToolsets({ root: '/path/to/project'
 | `web_fetch` | Read one URL as Markdown (HTML is converted; JSON and text pass through; long pages come back in pieces) | No |
 
 - **Confined:** every path is resolved inside `root`; `../../.ssh` is refused.
+- **Web only:** `standardToolsets({ files: false, shell: false })` gives an agent just the web tools, with no folder and no `root` (what a hosted service wants). `webToolset()` is the same thing on its own.
 - **Approvals:** changes carry a `write` account, so the loop asks your `approve` first, or refuses when the app gave none, which is how a read-only agent is made. `shell: false` and `web: false` leave a kind out.
 - **Web search** uses Exa's hosted endpoint, the way opencode does: no key, no SDK (`EXA_API_KEY` raises its rate limits). Pass `webOptions: { search }` to use Brave, Tavily or anything else.
-- **Web fetch** follows redirects by hand and checks every hop: `localhost`, private networks and cloud-metadata addresses are refused unless you pass `webOptions: { allowPrivate: true }`. A page can still say anything, so the engine's rules treat all tool output as data, and the agent is told to name the URLs its answer rests on.
+- **Web fetch** follows redirects by hand and checks every hop. It refuses `localhost`, private networks, cloud-metadata addresses, any single-label name (`http://api/`, `http://db:5432`, which can only be an internal service) and any name that *resolves* to a private address, unless you pass `webOptions: { allowPrivate: true }`. One gap remains: a name that changes its DNS answer between the check and the connection is not caught, so when this runs for people you do not trust, also deny the private ranges at the firewall (a Kubernetes egress policy, for one). A page can still say anything, so the engine's rules treat all tool output as data, and the agent is told to name the URLs its answer rests on.
+- **The model list** agento offers is a public subpath: `import { CURATED, labelOf, offered, STARTER } from '@ghostmind-dev/agento/models'`. The engine itself still names no model.
 
 ## The `agento` command
 

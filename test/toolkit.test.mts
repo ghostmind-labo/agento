@@ -90,7 +90,7 @@ const files = fileToolset(root, { ripgrep: false });
 
 // 5 · addresses we will not fetch
 {
-  for (const h of ['localhost', 'app.localhost', 'printer.local', 'db.internal', '127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '[::1]', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1', '']) assert.ok(isPrivateHost(h), h);
+  for (const h of ['api', 'db', 'postgres', 'printer', 'localhost.localdomain', 'localhost', 'app.localhost', 'printer.local', 'db.internal', '127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '[::1]', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1', '']) assert.ok(isPrivateHost(h), h);
   for (const h of ['example.com', '8.8.8.8', '172.32.0.1', '172.15.0.1', '100.63.0.1', 'localhost.example.com', '2606:4700::1111']) assert.ok(!isPrivateHost(h), h);
   ok('isPrivateHost');
 }
@@ -162,7 +162,7 @@ const files = fileToolset(root, { ripgrep: false });
     if (!r) throw new Error(`unexpected ${url}`);
     return r();
   }) as unknown as typeof globalThis.fetch;
-  const web = webToolset({ fetch });
+  const web = webToolset({ fetch, resolve: async () => ['93.184.216.34'] });
 
   const first = await run(web, 'web_fetch', { url: 'https://example.com/page' });
   assert.match(first, /^https:\/\/example\.com\/page · text\/html · \d+ characters\n\n# Hello\n\n# Hi\n\nword word/);
@@ -191,11 +191,51 @@ const files = fileToolset(root, { ripgrep: false });
   ok('web_fetch');
 }
 
+// 9b · where a name POINTS matters, not only what it looks like (a cluster's short names, a name aimed at a private address)
+{
+  const reached: string[] = [];
+  const fetch = (async (url: string) => (reached.push(url), new Response('<h1>internal</h1>', { headers: { 'content-type': 'text/html' } }))) as unknown as typeof globalThis.fetch;
+  const looked: string[] = [];
+  const dns: Record<string, string[]> = {
+    'evil.example.com': ['10.0.3.7'],
+    'mixed.example.com': ['93.184.216.34', '169.254.169.254'],
+    'public.example.com': ['93.184.216.34'],
+    'v6.example.com': ['fd00::5'],
+  };
+  const web = webToolset({ fetch, resolve: async h => (looked.push(h), dns[h] ?? (() => { throw new Error('ENOTFOUND'); })()) });
+
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://api/' }), /api is a local or private address/);
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://db:5432/' }), /db is a local or private address/);
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://evil.example.com/' }), /evil\.example\.com resolves to a private address \(10\.0\.3\.7\)/);
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://mixed.example.com/' }), /resolves to a private address \(169\.254\.169\.254\)/, 'one bad address among good ones is enough');
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://v6.example.com/' }), /resolves to a private address \(fd00::5\)/);
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://2130706433/' }), /127\.0\.0\.1 is a local or private address/, 'a decimal IP is read as the address it is');
+  await assert.rejects(run(web, 'web_fetch', { url: 'http://0x7f.1/' }), /local or private address/);
+  assert.deepEqual(reached, [], 'none of these was ever requested');
+  assert.match(await run(web, 'web_fetch', { url: 'http://public.example.com/' }), /# internal/);
+  assert.deepEqual(reached, ['http://public.example.com/']);
+  // An unresolvable name is not a private one: the fetch itself reports it.
+  await run(web, 'web_fetch', { url: 'http://unknown.example.com/' }).catch(() => {});
+  // IP literals are judged as they are, without a lookup.
+  looked.length = 0;
+  await run(web, 'web_fetch', { url: 'http://93.184.216.34/' });
+  assert.deepEqual(looked, [], 'no lookup for an address literal');
+  // allowPrivate turns the whole check off (a developer's own machine).
+  const open = webToolset({ fetch, allowPrivate: true, resolve: async () => { throw new Error('should not look'); } });
+  assert.match(await run(open, 'web_fetch', { url: 'http://api/' }), /# internal/);
+  ok('web_fetch: internal names and names that point inward are refused');
+}
+
 // 10 · the standard set, and leaving kinds out
 {
   const names = (t: ReturnType<typeof standardToolsets>) => t.flatMap(s => s.tools.map(x => x.name));
   assert.deepEqual(names(standardToolsets({ root })), ['list_dir', 'read_file', 'glob', 'search', 'write_file', 'edit_file', 'run_command', 'web_search', 'web_fetch']);
   assert.deepEqual(names(standardToolsets({ root, shell: false, web: false })), ['list_dir', 'read_file', 'glob', 'search', 'write_file', 'edit_file']);
+  // A web-only agent (a hosted service with no disk to give): no root needed.
+  assert.deepEqual(names(standardToolsets({ files: false, shell: false })), ['web_search', 'web_fetch']);
+  assert.deepEqual(names(standardToolsets({ root, files: false })), ['run_command', 'web_search', 'web_fetch']);
+  assert.throws(() => standardToolsets({}), /needs `root`/);
+  assert.throws(() => standardToolsets({ files: false }), /needs `root`/, 'the shell still needs a folder');
   const changes = standardToolsets({ root }).flatMap(s => s.tools).filter(t => t.write).map(t => t.name);
   assert.deepEqual(changes, ['write_file', 'edit_file', 'run_command'], 'only these ask for approval; reads and the web do not');
   ok('standardToolsets');

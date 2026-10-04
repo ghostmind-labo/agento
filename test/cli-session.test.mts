@@ -7,8 +7,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scriptedModel, type AgentEvent, type ApprovalRequest } from '../src/index.ts';
 import { createSession, type Answer } from '../src/cli/session.ts';
-import { fileToolset } from '../src/cli/files.ts';
-import { shellToolset } from '../src/cli/shell.ts';
+import { fileToolset } from '../src/toolkit/files.ts';
+import { shellToolset } from '../src/toolkit/shell.ts';
 import { describeCall, printer, summary } from '../src/cli/ui.ts';
 
 let n = 0;

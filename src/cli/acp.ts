@@ -30,12 +30,11 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { dirSkills, type ApprovalRequest, type Guidance, type ModelProvider, type Toolset } from '../index.ts';
 import { home } from './config.ts';
-import { fileToolset } from './files.ts';
 import { loadStrategy } from './gym/strategy.ts';
 import { connectSpecs, fromAcpMcp, mcpAvailable, type AcpMcpServer, type McpConnection } from './mcp.ts';
 import { CURATED, labelOf, STARTER } from './models.ts';
 import { createSession, type Answer, type Session } from './session.ts';
-import { shellToolset } from './shell.ts';
+import { standardToolsets } from '../toolkit/index.ts';
 import { describeCall } from './ui.ts';
 
 export const PROTOCOL_VERSION = 1;
@@ -71,6 +70,9 @@ export interface AcpOptions {
   autoApprove?: boolean;
   /** Shell commands starting with one of these words are approved without asking, if they are simple. */
   allowShell?: string[];
+  /** The web tools (default on) and whether they may reach local and private addresses (default off). */
+  web?: boolean;
+  webLocal?: boolean;
 }
 
 interface Turn {
@@ -89,7 +91,7 @@ interface AcpSession {
   turn?: Turn;
 }
 
-const KINDS: Record<string, ToolKind> = { read_file: 'read', list_dir: 'read', search: 'search', write_file: 'edit', edit_file: 'edit', run_command: 'execute' };
+const KINDS: Record<string, ToolKind> = { read_file: 'read', list_dir: 'read', glob: 'search', search: 'search', web_search: 'search', web_fetch: 'fetch', write_file: 'edit', edit_file: 'edit', run_command: 'execute' };
 export const kindOf = (tool: string): ToolKind => KINDS[tool] ?? 'other';
 
 /**
@@ -120,7 +122,7 @@ export function shellAllowed(command: unknown, allow: string[] = []): boolean {
   return allow.some(w => cmd === w || cmd.startsWith(`${w} `)) && simpleCommand(cmd);
 }
 
-const FILE_TOOLS = new Set(['read_file', 'list_dir', 'search', 'write_file', 'edit_file']);
+const FILE_TOOLS = new Set(['read_file', 'list_dir', 'glob', 'search', 'write_file', 'edit_file']);
 
 /** A prompt's content blocks as the text the agent reads. */
 export function promptText(blocks: unknown): string {
@@ -193,6 +195,21 @@ export async function serveAcp(o: AcpOptions): Promise<void> {
     return [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: current, options }];
   };
 
+  /** The model's context window from the provider's card, or a safe 128k when it cannot say. */
+  const sizes = new Map<string, number>();
+  const contextSize = async (model: string): Promise<number> => {
+    if (sizes.has(model)) return sizes.get(model)!;
+    let size = 128_000;
+    try {
+      const card = await Promise.race([o.providerFor(model).card?.(model), new Promise<undefined>(r => setTimeout(() => r(undefined), 3000))]);
+      if (card?.context) size = card.context;
+    } catch {
+      /* no card: the default stands */
+    }
+    sizes.set(model, size);
+    return size;
+  };
+
   // ── events → session/update ──
   const onEvent = (s: AcpSession) => (e: import('../index.ts').AgentEvent) => {
     const turn = s.turn;
@@ -261,13 +278,17 @@ export async function serveAcp(o: AcpOptions): Promise<void> {
           mcpCapabilities: { http: remote, sse: remote },
         },
         agentInfo: { name: 'agento', title: 'agento', version: version() },
-        authMethods: [
-          {
-            id: 'openrouter-key',
-            name: 'OpenRouter API key',
-            description: 'agento reads OPENROUTER_API_KEY from its environment. Set it where the editor launches the agent (in Zed: the agent server\'s `env`).',
-          },
-        ],
+        // With the key in the environment there is nothing to authenticate: no step, no prompt. Without it,
+        // say how, and session/new fails fast with the same words.
+        authMethods: o.hasKey()
+          ? []
+          : [
+              {
+                id: 'openrouter-key',
+                name: 'OpenRouter API key',
+                description: 'agento reads OPENROUTER_API_KEY from its environment. Set it where the host launches the agent (in Zed: the agent server\'s `env`).',
+              },
+            ],
       };
     },
 
@@ -285,7 +306,10 @@ export async function serveAcp(o: AcpOptions): Promise<void> {
       const id = `sess_${randomBytes(8).toString('hex')}`;
       const mcp = await connectSpecs(fromAcpMcp(p.mcpServers as AcpMcpServer[]), text => log(`${text}\n`)).catch(() => [] as McpConnection[]);
       for (const m of mcp) if (!m.ok) log(`mcp ${m.name}: ${m.error}\n`);
-      const toolsets: Toolset[] = [fileToolset(cwd), shellToolset(cwd), ...mcp.flatMap(m => (m.toolset ? [m.toolset] : []))];
+      const toolsets: Toolset[] = [
+        ...standardToolsets({ root: cwd, web: o.web !== false, webOptions: { allowPrivate: !!o.webLocal } }),
+        ...mcp.flatMap(m => (m.toolset ? [m.toolset] : [])),
+      ];
       const strategy = loadStrategy(model);
       const entry: AcpSession = { id, cwd, mcp, session: undefined as unknown as Session };
       entry.session = createSession({
@@ -331,6 +355,11 @@ export async function serveAcp(o: AcpOptions): Promise<void> {
       try {
         const result = await s.session.send(text, turn.abort.signal);
         const stop = stopReason(result.status, turn.cancelled);
+        // What the turn cost (a host with a budget, like an ensemble graph, reads this) and a rough
+        // size of the conversation: ~4 characters a token, against the model's context window.
+        const used = Math.ceil(result.messages.reduce((n, m) => n + String(m.content ?? '').length, 0) / 4);
+        const size = await contextSize(modelOf(s));
+        update(s.id, { sessionUpdate: 'usage_update', used, size: Math.max(size, used), cost: { amount: s.session.total, currency: 'USD' } });
         // Words the model never streamed (an empty-reply give-up) or why a limit ended the turn.
         const notice = !turn.streamed && result.answer ? result.answer : result.status === 'limit' && result.reason ? `\n\n_(stopped: ${result.reason})_` : '';
         if (notice && stop !== 'cancelled') update(s.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: notice } });

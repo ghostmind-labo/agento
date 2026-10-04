@@ -53,5 +53,8 @@ export type { InlineSkill } from './skills.ts';
 export { askJevTool, askModelTool } from './consult.ts';
 export type { AskModelOptions } from './consult.ts';
 
+export { standardToolsets, fileToolset, shellToolset, webToolset, exaSearch, htmlToMarkdown } from './toolkit/index.ts';
+export type { StandardToolsOptions, WebOptions, SearchBackend } from './toolkit/index.ts';
+
 export { scriptedModel, firstOption } from './testing.ts';
 export type { ScriptedModel, ScriptStep, ScriptedDecide } from './testing.ts';

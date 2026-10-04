@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
+process.env.HOME = mkdtempSync(join(tmpdir(), 'agento-acp-userhome-')); // not the machine's ~/.claude/skills
 process.env.AGENTO_HOME = mkdtempSync(join(tmpdir(), 'agento-acp-home-'));
 const { scriptedModel } = await import('../src/index.ts');
 const { E, kindOf, promptText, serveAcp, shellAllowed, simpleCommand, stopReason } = await import('../src/cli/acp.ts');
@@ -90,8 +91,7 @@ function editor(script: Parameters<typeof scriptedModel>[0] = [], options: { has
   assert.equal(r.result.agentCapabilities.loadSession, false);
   assert.deepEqual(r.result.agentCapabilities.promptCapabilities, { image: false, audio: false, embeddedContext: true });
   assert.equal(typeof r.result.agentCapabilities.mcpCapabilities.http, 'boolean');
-  assert.equal(r.result.authMethods[0].id, 'openrouter-key');
-  assert.match(r.result.authMethods[0].description, /OPENROUTER_API_KEY/);
+  assert.deepEqual(r.result.authMethods, [], 'with the key in the environment there is no auth step to advertise');
   const newer = await e.call('initialize', { protocolVersion: 99 });
   assert.equal(newer.result.protocolVersion, 1, 'a version we do not speak is answered with the latest we do');
   await e.close();
@@ -101,6 +101,9 @@ function editor(script: Parameters<typeof scriptedModel>[0] = [], options: { has
 // 2 · authentication: without a key, authenticate and session/new say so with the auth error
 {
   const e = editor([], { hasKey: false });
+  const init = await e.call('initialize', { protocolVersion: 1 });
+  assert.equal(init.result.authMethods[0].id, 'openrouter-key', 'without the key, the way to fix it is advertised');
+  assert.match(init.result.authMethods[0].description, /OPENROUTER_API_KEY/);
   const a = await e.call('authenticate', { methodId: 'openrouter-key' });
   assert.equal(a.error.code, E.auth);
   assert.match(a.error.message, /OPENROUTER_API_KEY/);
@@ -157,6 +160,10 @@ function editor(script: Parameters<typeof scriptedModel>[0] = [], options: { has
   assert.equal(done.status, 'completed');
   assert.match(done.content[0].content.text, /hello from the notes/);
   assert.equal(e.updates('agent_message_chunk').map(u => u.content.text).join(''), 'Looking. It says hello.');
+  const [usage] = e.updates('usage_update');
+  assert.deepEqual(usage.cost, { amount: 0, currency: 'USD' }, 'the turn\'s cost, reported in USD');
+  assert.ok(Number.isInteger(usage.used) && usage.used > 0 && usage.size >= usage.used, 'used and size are token counts');
+  assert.ok(e.raw.findIndex(m => m.params?.update?.sessionUpdate === 'usage_update') < e.raw.findIndex(m => m.id === r.id), 'the cost arrives before the stop reason');
   const order = e.notes.map(x => x.params.update.sessionUpdate);
   assert.ok(order.indexOf('tool_call') < order.indexOf('tool_call_update'), 'the call is announced before it is reported');
   assert.ok(e.raw.every(m => m.jsonrpc === '2.0'));
@@ -373,6 +380,89 @@ function editor(script: Parameters<typeof scriptedModel>[0] = [], options: { has
   assert.equal(some.updates('tool_call_update').filter(u => u.status === 'completed').length, 1);
   await some.close();
   ok('unattended: --yes and --allow-shell');
+}
+
+// 13 · launched by a host with only an OpenRouter token: a clean HOME, nothing writable, a proxy as the base URL
+{
+  const { createServer } = await import('node:http');
+  const seen: { url: string; auth?: string; body: any }[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', d => (raw += d));
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : null;
+      seen.push({ url: req.url!, auth: req.headers.authorization, body });
+      if (req.url === '/api/v1/chat/completions' && body.stream) {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ model: 'stub/model', choices: [{ delta: { content: 'Hello ' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'from the proxy' }, finish_reason: 'stop' }], usage: { cost: 0.0012 } })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      } else if (req.url === '/api/v1/systemone') {
+        const answers = Object.fromEntries(Object.entries(body.questions as Record<string, any>).map(([id, q]) => {
+          const keys = Object.keys(q.criteria ?? {});
+          const pick = keys.includes('task') ? 'task' : keys[0];
+          return [id, q.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: pick, confidence: 0.9, probabilities: Object.fromEntries(keys.map(k => [k, k === pick ? 0.9 : 0.1])) }];
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ answers, usage: { cost: 0 } }));
+      } else res.writeHead(404, { 'Content-Type': 'application/json' }).end('{"error":{"message":"not found"}}');
+    });
+  });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+
+  const main = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'main.ts');
+  const child = (env: Record<string, string>) => {
+    const p = spawn(process.execPath, [main, 'acp'], { env: { PATH: process.env.PATH!, HOME: mkdtempSync(join(tmpdir(), 'clean-home-')), ...env } });
+    const msgs: Msg[] = [];
+    const pending = new Map<number, (m: Msg) => void>();
+    let id = 1;
+    createInterface({ input: p.stdout }).on('line', l => {
+      const m = JSON.parse(l) as Msg;
+      msgs.push(m);
+      if (m.id !== undefined && !m.method) pending.get(m.id)?.(m);
+    });
+    return {
+      msgs,
+      call: (method: string, params: Msg = {}) => new Promise<Msg>(res => {
+        const i = id++;
+        pending.set(i, res);
+        p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: i, method, params })}\n`);
+      }),
+      end: () => new Promise<void>(res => { p.on('close', () => res()); p.stdin.end(); }),
+    };
+  };
+
+  const host = child({ OPENROUTER_API_KEY: 'run-token', OPENROUTER_BASE_URL: `http://127.0.0.1:${port}/api/v1`, AGENTO_HOME: '/dev/null/agento' });
+  const init = await host.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.deepEqual(init.result.authMethods, [], 'a key in the environment: no authenticate step');
+  const created = await host.call('session/new', { cwd: mkdtempSync(join(tmpdir(), 'ws-')), mcpServers: [] });
+  assert.match(created.result.sessionId, /^sess_/, 'a clean, unwritable home does not stop the session');
+  const turn = await host.call('session/prompt', { sessionId: created.result.sessionId, prompt: [{ type: 'text', text: 'say hello' }] });
+  assert.deepEqual(turn.result, { stopReason: 'end_turn' });
+  const chunks = host.msgs.filter(m => m.params?.update?.sessionUpdate === 'agent_message_chunk').map(m => m.params.update.content.text).join('');
+  assert.equal(chunks, 'Hello from the proxy');
+  const usage = host.msgs.find(m => m.params?.update?.sessionUpdate === 'usage_update')!.params.update;
+  assert.equal(usage.cost.currency, 'USD');
+  assert.ok(usage.cost.amount >= 0.0012 && usage.cost.amount < 0.01, `the proxy's usage.cost came through: ${usage.cost.amount}`);
+  await host.end();
+
+  const chat = seen.filter(r => r.url === '/api/v1/chat/completions');
+  assert.ok(chat.length >= 1 && seen.some(r => r.url === '/api/v1/systemone'), 'the worker AND the decider both went through the one endpoint');
+  assert.ok(seen.every(r => r.url.startsWith('/api/v1/')), 'nothing was sent anywhere else');
+  assert.ok(seen.every(r => r.auth === 'Bearer run-token'), `every call carried the host's token, and only that; without it: ${seen.filter(r => r.auth !== 'Bearer run-token').map(r => r.url).join(', ')}`);
+  assert.equal(chat[0]!.body.model, 'qwen/qwen3.8-flash', 'no model chosen anywhere: the starter, with no prompt');
+
+  // No key: one clear error, immediately.
+  const bare = child({ AGENTO_HOME: '/dev/null/agento' });
+  assert.equal((await bare.call('initialize', { protocolVersion: 1 })).result.authMethods[0].id, 'openrouter-key');
+  const t0 = Date.now();
+  const refused = await bare.call('session/new', { cwd: tmpdir(), mcpServers: [] });
+  assert.equal(refused.error.code, E.auth);
+  assert.match(refused.error.message, /OPENROUTER_API_KEY/);
+  assert.ok(Date.now() - t0 < 3000, 'fails fast, never waits for input');
+  await bare.end();
+  server.close();
+  ok('hosted: clean HOME, proxy base URL, run token only; missing key fails fast');
 }
 
 console.log(`${n} cases`);

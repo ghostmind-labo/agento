@@ -133,6 +133,31 @@ The same `go | pause | stop` vocabulary as ensemble's `guard(step)`, so one supe
 
 `src/` never names an app: no app database, no app link format, no app wording in prompts. If a line of the engine would only make sense for one app, it belongs behind a seam. `test/boundary.test.mts` enforces it, along with zero runtime dependencies and no hardcoded model ids. Jev's `jev-latest` alias is the one default.
 
+## Standard tools
+
+The engine ships no tools of its own: what an agent may do is the app's decision. But files, a shell and the web are what nearly every agent needs, and each is easy to get subtly wrong, so they are written once, tested, and offered in one call:
+
+```ts
+import { standardToolsets } from '@ghostmind-dev/agento';
+
+runAgent({ provider, task, toolsets: standardToolsets({ root: '/path/to/project' }) });
+```
+
+| Tool | What it does | Asks first? |
+|---|---|---|
+| `list_dir`, `read_file` | Look around and read files, with line numbers and paging | No |
+| `glob` | Find files by name pattern (`**/*.test.ts`, `src/**/*.{ts,tsx}`) | No |
+| `search` | Regular-expression search of file contents. Uses ripgrep if installed, a built-in search if not | No |
+| `write_file`, `edit_file` | Create or overwrite a file; replace an exact passage | **Yes** |
+| `run_command` | One bash command, in the folder, with a timeout and capped output | **Yes** |
+| `web_search` | Find pages: title, URL and the relevant passages | No |
+| `web_fetch` | Read one URL as Markdown (HTML is converted; JSON and text pass through; long pages come back in pieces) | No |
+
+- **Confined:** every path is resolved inside `root`; `../../.ssh` is refused.
+- **Approvals:** changes carry a `write` account, so the loop asks your `approve` first, or refuses when the app gave none, which is how a read-only agent is made. `shell: false` and `web: false` leave a kind out.
+- **Web search** uses Exa's hosted endpoint, the way opencode does: no key, no SDK (`EXA_API_KEY` raises its rate limits). Pass `webOptions: { search }` to use Brave, Tavily or anything else.
+- **Web fetch** follows redirects by hand and checks every hop: `localhost`, private networks and cloud-metadata addresses are refused unless you pass `webOptions: { allowPrivate: true }`. A page can still say anything, so the engine's rules treat all tool output as data, and the agent is told to name the URLs its answer rests on.
+
 ## The `agento` command
 
 The package ships a terminal chat on the core, in the spirit of opencode. Use it to try the engine, or as a small agent in any folder:
@@ -172,7 +197,23 @@ npm install -g @ghostmind-dev/agento
 - **Approvals:** changes and shell commands go to the host as permission requests, so you click Allow in your editor.
 - **Unattended** (an agent nobody watches, like one answering in a Buzz channel): `--yes` approves everything, or `--allow-shell <word>` approves only simple commands starting with that word. "Simple" means no `;`, `&`, `|`, redirects, `$`, backticks, parentheses or globs outside single quotes. Everything else still asks.
 - **MCP servers** the host passes are used. Remote ones need `@ghostmind-dev/ensemble` installed alongside (an optional peer).
+- **Cost:** each turn ends with a `usage_update` carrying the cost in USD, so a host with a budget (an ensemble graph, for one) can count it.
 - **Not yet:** the host's own file and terminal methods, `session/load`, images and audio.
+
+### As an MCP tool
+
+`agento mcp` serves the agent as an MCP server on stdio with one tool, `run_task`: give it a `prompt` (and optionally `cwd`, `model`, `max_usd`) and it works on its own and returns its answer. The status, steps, tool calls and cost (USD) are in `structuredContent`, since MCP has no field for what a call cost. Any MCP client can call it: Claude Code, opencode, or ensemble:
+
+```ts
+mcpServers: { agento: { command: "agento", args: ["mcp"], timeoutMs: 300_000 } },
+agents: { helper: { protocol: "mcp", server: "agento", tool: "run_task" } },
+```
+
+Nobody is there to approve anything, so it is **read-only by default**: `write_file`, `edit_file` and `run_command` are not even offered. `--yes` offers everything and asks nothing; `--allow-shell <word>` offers `run_command` for simple commands starting with that word, and any other command comes back as an ordinary tool error (the task goes on). An unfinished task (a limit hit) is returned as an error, so a graph step fails instead of passing half an answer.
+
+### Launched by a host that supplies the key
+
+The one credential is `OPENROUTER_API_KEY`, from the environment, and `OPENROUTER_BASE_URL` is honoured (a proxy that meters a run works). Every model call goes through that one endpoint: the worker, and the Jev decisions through `/systemone`. Nothing needs a login, a saved default or a writable home: with the key set, `agento acp` and `agento mcp` just start (no `authenticate` step is advertised), the model comes from `--model`, `AGENT_MODEL` or a cheap starter, and the session log is best-effort. Without the key they say so at once, naming it. The web tools reach Exa's endpoint directly (no key); `--no-web` leaves them out for a sandbox without outbound access.
 
 **Compliance** is checked with the protocol's own kit, [acp-tck](https://github.com/agentclientprotocol/acp-tck), run on a stand-in model (no key, no spend):
 

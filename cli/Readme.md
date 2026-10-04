@@ -3,7 +3,7 @@
 How to run the `agento` command **from this repo**. The command itself lives in `src/cli/` and ships in the npm package (`npx @ghostmind-dev/agento`). This folder only adds the local setup: the key from Vault through varlock, and running from source, so an engine change is testable the moment it's saved, with no build and no publish.
 
 ```bash
-alias agento=/Volumes/Projects/labo/agent/cli/scripts/agento.sh   # once, in your shell profile
+alias agento=/Volumes/Projects/labo/agento/cli/scripts/agento.sh   # once, in your shell profile
 agento model                            # once: pick the default model from a list
 agento                                  # chat in the current directory
 agento -p "what does this repo do?"     # one turn, then exit (exit 1 unless done)

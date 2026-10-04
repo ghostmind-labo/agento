@@ -2,7 +2,7 @@
   "id": "aG7kQ2mXv9Lp",
   "name": "agento",
   "type": "project",
-  "description": "agento: the agent engine as a library, and a terminal / ACP / MCP agent on top of it, plus its hosted product",
+  "description": "agento: the agent engine as a library, and a terminal / ACP / MCP agent on top of it",
   "tags": [
     "agent",
     "agento",

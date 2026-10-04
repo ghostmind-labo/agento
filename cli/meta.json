@@ -28,7 +28,7 @@
               "panes": [
                 {
                   "name": "dev",
-                  "description": "the agent REPL (run routine dev), working in labo/agent"
+                  "description": "the agent REPL (run routine dev), working in labo/agento"
                 },
                 {
                   "name": "execution-shell",

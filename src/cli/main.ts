@@ -27,8 +27,7 @@ import { pick, type Item } from './picker.ts';
 import { loadStrategy } from './gym/strategy.ts';
 import { connectAll, type McpConnection } from './mcp.ts';
 import { createSession, type Answer } from './session.ts';
-import { fileToolset } from './files.ts';
-import { shellToolset } from './shell.ts';
+import { standardToolsets } from '../toolkit/index.ts';
 import { c, isStyle, printer, STYLES, summary, type Style } from './ui.ts';
 
 const { values: flags, positionals } = parseArgs({
@@ -44,6 +43,8 @@ const { values: flags, positionals } = parseArgs({
     'no-mcp': { type: 'boolean' },
     'no-skills': { type: 'boolean' },
     'no-shell': { type: 'boolean' },
+    'no-web': { type: 'boolean' },
+    'web-local': { type: 'boolean' },
     models: { type: 'boolean' },
     pick: { type: 'boolean' },
     all: { type: 'boolean' },
@@ -66,6 +67,8 @@ const HELP = `agento — the agent core in a terminal
   agento model <id>          set the default model directly
   agento acp                 run as an ACP agent for editors and chats (Zed, JetBrains, Buzz…)
                              unattended: --yes (approve all) or --allow-shell <word> (simple commands only)
+  agento mcp                 run as an MCP server with one tool, run_task (for ensemble, Claude Code, opencode…)
+                             read-only unless --yes or --allow-shell <word>
   agento models              the models agento offers, with live prices
   agento train               train the harness around your model: fresh challenges, keep what
                              scores better (--rounds 3, --size 6, --max-usd 0.05; --report)
@@ -79,7 +82,8 @@ const HELP = `agento — the agent core in a terminal
   -s, --style <style>        output: minimal (answers) · normal (+ a line per tool call) · verbose
                              (+ results, Jev scoring, costs). Default: saved with /style, else normal
   -v, --verbose              same as --style verbose
-      --no-mcp --no-skills --no-shell
+      --no-mcp --no-skills --no-shell --no-web    leave a kind of tool out
+      --web-local            let web_fetch reach localhost and private networks (off by default)
 
 In the chat:  /model            pick from the list (↑↓, type to filter; then save as default)
               /model <id>       switch for this session     /default [id]  save as the default
@@ -123,7 +127,7 @@ if (sub === 'models' || flags.models) {
   await listModels(sub === 'models' ? subArg : sub, !!flags.all, s => process.stdout.write(s));
   process.exit(0);
 }
-if (sub && sub !== 'model' && sub !== 'train' && sub !== 'acp') {
+if (sub && sub !== 'model' && sub !== 'train' && sub !== 'acp' && sub !== 'mcp') {
   console.error(`unknown command "${sub}" — agento --help`);
   process.exit(2);
 }
@@ -254,6 +258,31 @@ if (sub === 'acp') {
     hasKey: () => !!process.env.OPENROUTER_API_KEY,
     autoApprove: !!flags.yes,
     allowShell: flags['allow-shell'],
+    web: !flags['no-web'],
+    webLocal: !!flags['web-local'],
+  });
+  process.exit(0);
+}
+
+// `agento mcp`: the agent as one MCP tool (run_task), for hosts that call tools. Same stdout rule as acp.
+if (sub === 'mcp') {
+  console.log = console.error;
+  console.info = console.error;
+  const { serveMcp } = await import('./mcp-server.ts');
+  await serveMcp({
+    input: process.stdin,
+    output: process.stdout,
+    log: s => void process.stderr.write(s),
+    defaultModel: resolveModel(flags.model, process.env.AGENT_MODEL, readConfig()).model,
+    providerFor: m => openrouter({ model: m, headers: { 'X-Title': 'agento' } }),
+    guidance: parseGuidance(flags.guidance) ?? 'auto',
+    maxUsd: Number(flags['max-usd'] ?? process.env.AGENT_MAX_USD ?? 0.5),
+    hasKey: () => !!process.env.OPENROUTER_API_KEY,
+    autoApprove: !!flags.yes,
+    allowShell: flags['allow-shell'],
+    web: !flags['no-web'],
+    webLocal: !!flags['web-local'],
+    cwd: resolve(flags.cwd ?? process.cwd()),
   });
   process.exit(0);
 }
@@ -291,7 +320,7 @@ const style: Style = (styleArg as Style | undefined) ?? (isStyle(saved) ? saved 
 const print = printer(out, { stream: true, style });
 
 // ── tools ──
-const toolsets: Toolset[] = [fileToolset(root), ...(flags['no-shell'] ? [] : [shellToolset(root)])];
+const toolsets: Toolset[] = standardToolsets({ root, shell: !flags['no-shell'], web: !flags['no-web'], webOptions: { allowPrivate: !!flags['web-local'] } });
 let mcp: McpConnection[] = [];
 if (!flags['no-mcp']) {
   mcp = await connectAll(root, text => out(c.yellow(`${text}\n`)));

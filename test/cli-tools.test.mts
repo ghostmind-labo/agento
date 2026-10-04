@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileToolset, inside } from '../src/cli/files.ts';
-import { shellToolset } from '../src/cli/shell.ts';
+import { fileToolset, inside } from '../src/toolkit/files.ts';
+import { shellToolset } from '../src/toolkit/shell.ts';
 import { mcpConfig, WRITE_VERBS } from '../src/cli/mcp.ts';
 
 let n = 0;

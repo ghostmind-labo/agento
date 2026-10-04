@@ -340,7 +340,9 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
     defaultModel: config.model,
 
     async card(model, signal) {
-      const cards = await modelCatalog({ baseUrl: base, fetch: doFetch }, signal).catch(() => []);
+      // The list is public, but a host that meters or authorises every call (a proxy) wants the token on it too.
+      const key = config.apiKey ?? process.env.OPENROUTER_API_KEY;
+      const cards = await modelCatalog({ baseUrl: base, fetch: doFetch, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...config.headers } }, signal).catch(() => []);
       return cards.find(c => c.id === model) ?? null;
     },
 
@@ -406,12 +408,12 @@ const catalogs = new Map<string, Promise<ModelCard[]>>();
  * OpenRouter's live model list (public, no key), cached per base url for the process. The one
  * place a price or a capability comes from — never a table in this package, which would go stale.
  */
-export function modelCatalog(config: Pick<OpenRouterConfig, 'baseUrl' | 'fetch'> = {}, signal?: AbortSignal): Promise<ModelCard[]> {
+export function modelCatalog(config: Pick<OpenRouterConfig, 'baseUrl' | 'fetch' | 'headers'> = {}, signal?: AbortSignal): Promise<ModelCard[]> {
   const base = (config.baseUrl ?? process.env.OPENROUTER_BASE_URL ?? OPENROUTER_URL).replace(/\/+$/, '');
   let cached = catalogs.get(base);
   if (!cached) {
     cached = (async () => {
-      const res = await (config.fetch ?? globalThis.fetch)(`${base}/models`, { signal });
+      const res = await (config.fetch ?? globalThis.fetch)(`${base}/models`, { signal, ...(config.headers ? { headers: config.headers } : {}) });
       if (!res.ok) throw await refusal(res);
       const json = (await res.json()) as {
         data?: { id: string; name?: string; context_length?: number; pricing?: { prompt?: string; completion?: string }; supported_parameters?: string[]; architecture?: { input_modalities?: string[] } }[];

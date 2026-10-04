@@ -27,6 +27,8 @@ Answers render as markdown, as they stream: box-drawn tables fitted to your term
 
 **In an editor or a chat:** `agento acp` runs this same agent over the Agent Client Protocol, so Zed, JetBrains and Buzz can use it (see the main Readme for each host's config). `npm run tck` checks it against the protocol's own compliance kit.
 
+**Tools:** the package's standard tools (files, `glob`, `search`, a shell, `web_search`, `web_fetch`). `--no-web` and `--no-shell` leave a kind out, and `--web-local` lets `web_fetch` reach localhost and private networks (refused by default). `agento mcp` serves the same agent as one MCP tool (`run_task`) for ensemble, Claude Code or opencode.
+
 **Training (`agento train`):** the harness learns to get the most out of a cheap model. Each round:
 1. **Fresh challenges,** generated from a seed and graded exactly in code: math, file tasks, joining two files, a prompt-injection trap, and a question whose answer isn't there.
 2. **The current best setup** runs on them, **and one candidate:** a rule the model writes from its own failures, one setting moved one notch, or a learned rule removed.

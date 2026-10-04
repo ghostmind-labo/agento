@@ -1,5 +1,5 @@
 /**
- * Files — read, list, search, write and edit, confined to one root (the directory the CLI runs in).
+ * Files — read, list, find, search, write and edit, confined to one root (the directory an agent works in).
  *
  * Reads run freely; writes and edits are CHANGES, so the core asks for approval with a one-line
  * account before they run. Every path is resolved against the root and refused if it escapes it,
@@ -7,6 +7,7 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { AgentTool, Toolset } from '../index.ts';
 
@@ -70,7 +71,101 @@ function ripgrep(root: string, pattern: string, path: string, glob: string | und
   });
 }
 
-export function fileToolset(root: string): Toolset {
+/** Every file under `dir` (relative to `root`, slash-separated), skipping the usual build and VCS folders. */
+export function walkFiles(root: string, dir: string, limit = 20_000): string[] {
+  const out: string[] = [];
+  const walk = (d: string) => {
+    let names: string[];
+    try {
+      names = readdirSync(d).sort();
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (out.length >= limit) return;
+      const full = join(d, name);
+      let st;
+      try {
+        st = statSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        if (!SKIP.has(name) && !name.startsWith('.git')) walk(full);
+      } else out.push(relative(root, full).split(sep).join('/'));
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+/** A glob (`*`, `**`, `?`, `{a,b}`) as a RegExp over slash-separated paths. A pattern with no slash matches any depth. */
+export function globToRegExp(glob: string): RegExp {
+  const g = glob.includes('/') ? glob.replace(/^\.\//, '') : `**/${glob}`;
+  let re = '';
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i]!;
+    if (c === '*') {
+      if (g[i + 1] === '*') {
+        i++;
+        if (g[i + 1] === '/') {
+          i++;
+          re += '(?:.*/)?';
+        } else re += '.*';
+      } else re += '[^/]*';
+    } else if (c === '?') re += '[^/]';
+    else if (c === '{') {
+      const end = g.indexOf('}', i);
+      if (end < 0) re += '\\{';
+      else {
+        re += `(?:${g.slice(i + 1, end).split(',').map(x => x.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')).join('|')})`;
+        i = end;
+      }
+    } else re += c.replace(/[.+^$()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/** The search without ripgrep: the same output shape (path:line:text), at most 20 matches per file. */
+export function nodeSearch(root: string, pattern: string, dir: string, glob?: string): string {
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern);
+  } catch {
+    re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  }
+  const only = glob ? globToRegExp(glob) : null;
+  const out: string[] = [];
+  for (const file of walkFiles(root, dir)) {
+    if (only && !only.test(file)) continue;
+    let text: string;
+    try {
+      const full = join(root, file);
+      if (statSync(full).size > 2_000_000) continue;
+      text = readFileSync(full, 'utf8');
+    } catch {
+      continue;
+    }
+    if (text.includes('\u0000')) continue; // binary
+    let found = 0;
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length && found < 20; i++) {
+      if (re.test(lines[i]!)) {
+        out.push(`${file}:${i + 1}:${lines[i]!.slice(0, 300)}`);
+        found++;
+      }
+    }
+    if (out.length >= 2000) break;
+  }
+  return out.join('\n');
+}
+
+export interface FileToolsetOptions {
+  /** Use ripgrep for `search` when it is installed (default). False forces the built-in search. */
+  ripgrep?: boolean;
+}
+
+export function fileToolset(root: string, options: FileToolsetOptions = {}): Toolset {
   const tools: AgentTool[] = [
     {
       name: 'list_dir',
@@ -98,12 +193,34 @@ export function fileToolset(root: string): Toolset {
       },
     },
     {
+      name: 'glob',
+      description: 'Find files by name pattern, e.g. "**/*.test.ts" or "src/**/*.{ts,tsx}" or "README*". Optional `path` to start in. Returns paths, at most 200.',
+      parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' } }, required: ['pattern'] },
+      run: async a => {
+        const where = inside(root, a.path);
+        const re = globToRegExp(String(a.pattern ?? ''));
+        const base = relative(root, where).split(sep).join('/');
+        const hits = walkFiles(root, where).filter(f => re.test(base && !String(a.pattern).includes('/') ? f.slice(base.length + 1) : f));
+        if (!hits.length) return 'No files match.';
+        return hits.length > 200 ? `${hits.slice(0, 200).join('\n')}\n…(${hits.length - 200} more; narrow the pattern)` : hits.join('\n');
+      },
+    },
+    {
       name: 'search',
-      description: 'Search file contents with a regular expression (ripgrep). Optional `path` to narrow, `glob` to filter files (e.g. "*.ts"). Returns file:line:text, at most 20 matches per file.',
+      description: 'Search file contents with a regular expression. Optional `path` to narrow, `glob` to filter files (e.g. "*.ts"). Returns file:line:text, at most 20 matches per file.',
       parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, glob: { type: 'string' } }, required: ['pattern'] },
       run: async (a, ctx) => {
         const where = inside(root, a.path);
-        const out = await ripgrep(root, String(a.pattern ?? ''), rel(root, where), a.glob ? String(a.glob) : undefined, ctx.signal);
+        const glob = a.glob ? String(a.glob) : undefined;
+        let out: string;
+        try {
+          if (options.ripgrep === false) throw Object.assign(new Error('built-in'), { code: 'ENOENT' });
+          out = await ripgrep(root, String(a.pattern ?? ''), rel(root, where), glob, ctx.signal);
+        } catch (error) {
+          // No ripgrep on this machine: the built-in search answers in the same shape.
+          if ((error as { code?: string }).code !== 'ENOENT') throw error;
+          out = nodeSearch(root, String(a.pattern ?? ''), where, glob);
+        }
         if (!out.trim()) return 'No matches.';
         const lines = out.trim().split('\n');
         return lines.length > 300 ? `${lines.slice(0, 300).join('\n')}\n…(${lines.length - 300} more matches; narrow the search)` : lines.join('\n');

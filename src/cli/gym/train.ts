@@ -24,9 +24,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultPrompts, runAgent, type Guidance, type ModelProvider } from '../../index.ts';
 import { home } from '../config.ts';
-import { fileToolset } from '../files.ts';
+import { fileToolset, shellToolset } from '../../toolkit/index.ts';
 import { cliSystem } from '../session.ts';
-import { shellToolset } from '../shell.ts';
 import { challenges, MAX_LEVEL, rng, type Challenge } from './challenges.ts';
 import { baseline, describeChange, loadStrategy, MAX_RULES, saveStrategy, type Strategy } from './strategy.ts';
 

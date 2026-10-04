@@ -49,6 +49,7 @@ export const cliSystem = (root: string): string[] => [
   `You are a command-line agent on the person's machine, working in ${root}. Paths are relative to it.`,
   'Look before you answer: list, search and read files instead of guessing what they contain. Quote paths and line numbers you actually read.',
   'To change a file, read it first, then use edit_file with an exact passage (or write_file for a new file). Every change and every shell command waits for the person\'s approval.',
+  'For anything that may have changed since your training (news, versions, documentation, prices), use web_search to find pages and web_fetch to read one; name the URLs your answer rests on. Do not search for what you can answer from the folder.',
   'Keep answers short and concrete. Say what you changed, and what you could not do.',
   'Your answer is shown as markdown in a terminal: use a table when you list items with several fields, `code` for paths and commands, and short lists; no HTML.',
 ];
@@ -63,8 +64,26 @@ export function createSession(o: SessionOptions) {
   const always = new Set<string>();
   const turns: AgentResult[] = [];
 
-  if (o.logPath) mkdirSync(dirname(o.logPath), { recursive: true });
-  const log = eventLog({ onAppend: e => void (o.logPath && appendFileSync(o.logPath, `${JSON.stringify(e)}\n`)) });
+  // The session log is a convenience, never a requirement: a read-only or missing home (a sandbox, a
+  // clean container) must not stop the agent, so every write here is best-effort.
+  let logOk = !!o.logPath;
+  if (o.logPath) {
+    try {
+      mkdirSync(dirname(o.logPath), { recursive: true });
+    } catch {
+      logOk = false;
+    }
+  }
+  const log = eventLog({
+    onAppend: e => {
+      if (!logOk) return;
+      try {
+        appendFileSync(o.logPath!, `${JSON.stringify(e)}\n`);
+      } catch {
+        logOk = false;
+      }
+    },
+  });
   const profiles = o.profilesPath ? fileProfiles(o.profilesPath) : undefined;
 
   async function send(text: string, signal?: AbortSignal): Promise<AgentResult> {

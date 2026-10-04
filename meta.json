@@ -1,12 +1,26 @@
 {
   "id": "aG7kQ2mXv9Lp",
-  "name": "agent",
-  "version": "0.0.1",
+  "name": "agento",
   "type": "project",
+  "description": "agento: the agent engine as a library, and a terminal / ACP / MCP agent on top of it, plus its hosted product",
+  "tags": [
+    "agent",
+    "agento",
+    "ai"
+  ],
+  "routines": {
+    "test": "npm test",
+    "typecheck": "npm run typecheck",
+    "build": "npm run build",
+    "tck": "npm run tck",
+    "herdr_init": "run herdr init agento --all",
+    "herdr_attach": "run herdr attach agento",
+    "herdr_terminate": "run herdr terminate agento"
+  },
   "herdr": {
     "workspaces": [
       {
-        "label": "agent",
+        "label": "agento",
         "tabs": [
           {
             "label": "dev",
@@ -15,7 +29,10 @@
             "compact": {
               "type": "main-side",
               "panes": [
-                "main",
+                {
+                  "name": "main",
+                  "description": "the engine and the agento command: git on the dev branch, run routine test, ad-hoc agento runs from the repo root"
+                },
                 {
                   "name": "execution-shell",
                   "description": "run ad-hoc commands here without interrupting other panes"
@@ -29,16 +46,16 @@
             "layout": "compact",
             "compact": {
               "type": "single",
-              "panes": ["shell"]
+              "panes": [
+                {
+                  "name": "shell",
+                  "description": "a plain shell at the repo root"
+                }
+              ]
             }
           }
         ]
       }
     ]
-  },
-  "routines": {
-    "herdr_init": "run herdr init agent --all",
-    "herdr_attach": "run herdr attach agent",
-    "herdr_terminate": "run herdr terminate agent"
   }
 }

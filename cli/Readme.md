@@ -25,6 +25,8 @@ Or `run routine dev` in `cli/` to chat in the repo root.
 
 Answers render as markdown, as they stream: box-drawn tables fitted to your terminal (cells wrap), headings, **bold**, `code`, lists, quotes and code blocks. `NO_COLOR` or piped output keeps the layout without the colours. Jev guides the agent in every style; only `verbose` shows its scores. `/cost` gives the session's spend anytime.
 
+**In an editor or a chat:** `agento acp` runs this same agent over the Agent Client Protocol, so Zed, JetBrains and Buzz can use it (see the main Readme for each host's config). `npm run tck` checks it against the protocol's own compliance kit.
+
 **Training (`agento train`):** the harness learns to get the most out of a cheap model. Each round:
 1. **Fresh challenges,** generated from a seed and graded exactly in code: math, file tasks, joining two files, a prompt-injection trap, and a question whose answer isn't there.
 2. **The current best setup** runs on them, **and one candidate:** a rule the model writes from its own failures, one setting moved one notch, or a learned rule removed.

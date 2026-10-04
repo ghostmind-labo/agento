@@ -39,6 +39,12 @@ export const CURATED: Curated[] = [
   { id: 'mistralai/mistral-medium-3-5', label: 'Mistral Medium 3.5', maker: 'Mistral', note: 'Strong generalist' },
 ];
 
+/**
+ * What an editor gets until the person picks a model (`agento model`, or the model selector the
+ * editor shows): cheap, tested live in the gym, and on the list above.
+ */
+export const STARTER = 'qwen/qwen3.8-flash';
+
 /** A model agento can drive: it calls tools and it reasons. */
 export const capable = (m: ModelCard): boolean => m.tools && m.reasoning;
 

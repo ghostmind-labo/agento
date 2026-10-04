@@ -51,6 +51,7 @@ const { values: flags, positionals } = parseArgs({
     size: { type: 'string' },
     seed: { type: 'string' },
     report: { type: 'boolean' },
+    'allow-shell': { type: 'string', multiple: true },
     help: { type: 'boolean', short: 'h' },
   },
   allowPositionals: true,
@@ -63,6 +64,8 @@ const HELP = `agento — the agent core in a terminal
 
   agento model               pick the default model from a list (saved; no flag needed after)
   agento model <id>          set the default model directly
+  agento acp                 run as an ACP agent for editors and chats (Zed, JetBrains, Buzz…)
+                             unattended: --yes (approve all) or --allow-shell <word> (simple commands only)
   agento models              the models agento offers, with live prices
   agento train               train the harness around your model: fresh challenges, keep what
                              scores better (--rounds 3, --size 6, --max-usd 0.05; --report)
@@ -120,7 +123,7 @@ if (sub === 'models' || flags.models) {
   await listModels(sub === 'models' ? subArg : sub, !!flags.all, s => process.stdout.write(s));
   process.exit(0);
 }
-if (sub && sub !== 'model' && sub !== 'train') {
+if (sub && sub !== 'model' && sub !== 'train' && sub !== 'acp') {
   console.error(`unknown command "${sub}" — agento --help`);
   process.exit(2);
 }
@@ -232,6 +235,27 @@ if (sub === 'train') {
   });
   releaseReader();
   process.exit(code);
+}
+
+// `agento acp`: the Agent Client Protocol, for editors (Zed, JetBrains…). stdout is the protocol's, so
+// nothing else may print there: no banner, no picker, and stray console output goes to stderr.
+if (sub === 'acp') {
+  console.log = console.error;
+  console.info = console.error;
+  const { serveAcp } = await import('./acp.ts');
+  await serveAcp({
+    input: process.stdin,
+    output: process.stdout,
+    log: s => void process.stderr.write(s),
+    defaultModel: resolveModel(flags.model, process.env.AGENT_MODEL, readConfig()).model,
+    providerFor: m => openrouter({ model: m, headers: { 'X-Title': 'agento' } }),
+    guidance: parseGuidance(flags.guidance) ?? 'auto',
+    maxUsd: Number(flags['max-usd'] ?? process.env.AGENT_MAX_USD ?? 0.5),
+    hasKey: () => !!process.env.OPENROUTER_API_KEY,
+    autoApprove: !!flags.yes,
+    allowShell: flags['allow-shell'],
+  });
+  process.exit(0);
 }
 
 let { model, from } = resolveModel(flags.model, process.env.AGENT_MODEL, readConfig());

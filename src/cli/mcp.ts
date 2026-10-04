@@ -79,8 +79,33 @@ export interface McpConnection {
   toolset?: Toolset;
 }
 
+/** `.mcp.json` in the folder, then ~/.agento/mcp.json. */
 export async function connectAll(cwd: string, onLogin: (text: string) => void): Promise<McpConnection[]> {
-  const specs = mcpConfig(cwd);
+  return connectSpecs(mcpConfig(cwd), onLogin);
+}
+
+/** An MCP server as an ACP client hands it over in session/new (name/value arrays, a `type` for remote ones). */
+export type AcpMcpServer =
+  | { name: string; command: string; args?: string[]; env?: { name: string; value: string }[] }
+  | { type: 'http' | 'sse'; name: string; url: string; headers?: { name: string; value: string }[] };
+
+const pairs = (list?: { name: string; value: string }[]) => (list?.length ? Object.fromEntries(list.map(p => [p.name, p.value])) : undefined);
+
+export function fromAcpMcp(servers: AcpMcpServer[] = []): Record<string, McpServerSpec> {
+  const out: Record<string, McpServerSpec> = {};
+  for (const s of servers) {
+    if ('url' in s) out[s.name] = { url: s.url, transport: s.type === 'sse' ? 'sse' : 'streamable-http', ...(pairs(s.headers) ? { headers: pairs(s.headers)! } : {}) };
+    else if (s.command) out[s.name] = { command: s.command, ...(s.args?.length ? { args: s.args } : {}), ...(pairs(s.env) ? { env: pairs(s.env)! } : {}) };
+  }
+  return out;
+}
+
+/** True when ensemble's connect() can be loaded (it is an optional peer). */
+export async function mcpAvailable(): Promise<boolean> {
+  return (await loadConnect()) !== null;
+}
+
+export async function connectSpecs(specs: Record<string, McpServerSpec>, onLogin: (text: string) => void): Promise<McpConnection[]> {
   if (!Object.keys(specs).length) return [];
   const connect = await loadConnect();
   if (!connect) return Object.keys(specs).map(name => ({ name, ok: false, tools: 0, error: `MCP needs ${ENSEMBLE}: npm install -g ${ENSEMBLE} (or add it next to this package)` }));

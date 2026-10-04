@@ -154,6 +154,34 @@ agento models                           # the short list with live prices (--all
 
 Answers render as markdown in the terminal, including box-drawn tables fitted to the width. `agento train` trains the harness around a cheap model: fresh challenges each round, graded in code, and a change kept only if it clearly scores better. It rises through 5 difficulty levels, and agento uses what it learned. Output has three styles: `minimal`, `normal` and `verbose` (`--style`, or `/style` to save one). Only `verbose` shows Jev's scoring and per-turn costs. Each session is logged to `~/.agento/sessions/`. The engine names no model. agento, as an app, offers a short curated list of 16 models with tools and reasoning, each proven in an agent loop (the list Potion's Talk offers), in `src/cli/models.ts`. "Other model…" searches the whole catalogue. `agento model` saves your pick in `~/.agento/config.json`, `--model` overrides it for one run, and `AGENT_MODEL` forces one. `agento --help` lists the options. In this repo, `cli/scripts/agento.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
 
+## Use agento from an editor or a chat (ACP)
+
+`agento acp` runs agento as an **ACP agent**: the Agent Client Protocol, an open standard (created by Zed, adopted by JetBrains and others) that lets a host launch any agent over stdio, the way editors launch language servers. Any ACP host can then use agento, with its tools, approvals, Jev guide and your choice of model.
+
+```bash
+npm install -g @ghostmind-dev/agent
+```
+
+| Host | Configuration |
+|---|---|
+| **Zed** (`settings.json`) | `"agent_servers": { "agento": { "type": "custom", "command": "agento", "args": ["acp"], "env": { "OPENROUTER_API_KEY": "sk-or-…" } } }`, then pick agento in the Agent Panel |
+| **JetBrains** (`~/.jetbrains/acp.json`, or AI Chat → Add Custom Agent) | `"agent_servers": { "agento": { "command": "agento", "args": ["acp"], "env": { "OPENROUTER_API_KEY": "sk-or-…" } } }` |
+| **Buzz** (Block's agent chat), custom harness file `~/Library/Application Support/xyz.block.buzz.app/custom_harnesses/agento.json` | `{ "id": "agento", "label": "agento", "command": "agento", "args": ["acp", "--allow-shell", "buzz-cli"], "env": { "OPENROUTER_API_KEY": "sk-or-…" } }`, or `BUZZ_ACP_AGENT_COMMAND=agento` with `BUZZ_ACP_AGENT_ARGS=acp,--allow-shell,buzz-cli` |
+
+- **The model:** the agent brings its own. The host shows a model selector (an ACP config option) with agento's curated list. Without a pick it uses your saved default (`agento model`), `AGENT_MODEL`, or a cheap starter.
+- **Approvals:** changes and shell commands go to the host as permission requests, so you click Allow in your editor.
+- **Unattended** (an agent nobody watches, like one answering in a Buzz channel): `--yes` approves everything, or `--allow-shell <word>` approves only simple commands starting with that word. "Simple" means no `;`, `&`, `|`, redirects, `$`, backticks, parentheses or globs outside single quotes. Everything else still asks.
+- **MCP servers** the host passes are used. Remote ones need `@ghostmind-dev/ensemble` installed alongside (an optional peer).
+- **Not yet:** the host's own file and terminal methods, `session/load`, images and audio.
+
+**Compliance** is checked with the protocol's own kit, [acp-tck](https://github.com/agentclientprotocol/acp-tck), run on a stand-in model (no key, no spend):
+
+```bash
+npm run tck       # needs uv and network the first time; prints the verdict
+```
+
+Last run: `VERDICT: CONFORMANT` (37 passed, 0 failed; the skips are optional features agento does not advertise). It is experimental, and a pass is not an official guarantee.
+
 ## Development
 
 ```

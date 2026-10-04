@@ -39,7 +39,8 @@
     "pretest": "npm run build",
     "example": "node examples/two-tools.mts",
     "bench": "node bench/guidance.mts",
-    "prepublishOnly": "npm run typecheck && npm test"
+    "prepublishOnly": "npm run typecheck && npm test",
+    "tck": "bash scripts/acp-tck.sh"
   },
   "devDependencies": {
     "@ghostmind-dev/ensemble": "^0.31.0",

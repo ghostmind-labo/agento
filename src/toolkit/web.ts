@@ -99,11 +99,47 @@ export function isPrivateHost(hostname: string): boolean {
     const [a, b] = [Number(v4[1]), Number(v4[2])];
     return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
   }
-  if (h.includes(':')) {
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);
-    if (mapped) return isPrivateHost(mapped[1]!);
-    return h === '::1' || h === '::' || /^f[cd]/.test(h) || /^fe[89ab]/.test(h);
+  if (h.includes(':')) return isPrivateV6(h);
+  return false;
+}
+
+/** Eight 16-bit groups from an IPv6 literal (`::` expanded, a dotted IPv4 tail read, a zone id dropped), or null if it is not one. */
+export function parseIPv6(literal: string): number[] | null {
+  let s = literal.split('%')[0]!;
+  const tail4 = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (tail4) {
+    const [a, b, c, d] = tail4.slice(1).map(Number) as [number, number, number, number];
+    if (a > 255 || b > 255 || c > 255 || d > 255) return null;
+    s = `${s.slice(0, tail4.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
   }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const part = (x: string | undefined) => (x ? x.split(':') : []);
+  const head = part(halves[0]);
+  const tail = halves.length === 2 ? part(halves[1]) : [];
+  const fill = 8 - head.length - tail.length;
+  if (halves.length === 1 ? head.length !== 8 : fill < 1) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? fill : 0).fill('0'), ...tail];
+  if (groups.length !== 8 || !groups.every(g => /^[0-9a-f]{1,4}$/i.test(g))) return null;
+  return groups.map(g => parseInt(g, 16));
+}
+
+/**
+ * IPv6: private if it is, or wraps, a private address. The URL parser rewrites `::ffff:127.0.0.1` as
+ * `::ffff:7f00:1`, and NAT64 (64:ff9b::/96), 6to4 (2002::/16) and the old IPv4-compatible form carry an
+ * IPv4 address too, so each is unwrapped and judged as the IPv4 address it points to. An address that
+ * cannot be parsed is refused (fail closed).
+ */
+function isPrivateV6(h: string): boolean {
+  const g = parseIPv6(h);
+  if (!g) return true;
+  const v4 = (hi: number, lo: number) => isPrivateHost(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+  if (g.slice(0, 5).every(x => x === 0) && (g[5] === 0xffff || g[5] === 0)) return v4(g[6]!, g[7]!); // ::, ::1, ::ffff:a.b.c.d, ::a.b.c.d
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every(x => x === 0)) return v4(g[6]!, g[7]!); // NAT64
+  if (g[0] === 0x2002) return v4(g[1]!, g[2]!); // 6to4
+  if ((g[0]! & 0xfe00) === 0xfc00) return true; // unique local fc00::/7
+  if ((g[0]! & 0xffc0) === 0xfe80 || (g[0]! & 0xffc0) === 0xfec0) return true; // link-local, site-local
+  if ((g[0]! & 0xff00) === 0xff00) return true; // multicast
   return false;
 }
 
@@ -202,6 +238,7 @@ export function webToolset(options: WebOptions = {}): Toolset {
         throw new Error(`"${current}" is not a valid URL`);
       }
       if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error(`Only http and https pages can be fetched (got ${u.protocol})`);
+      if (u.username || u.password) throw new Error('A URL with a username or password is not allowed; fetch the page without credentials');
       if (!options.allowPrivate) {
         if (isPrivateHost(u.hostname)) throw new Error(`${u.hostname} is a local or private address; fetching it is not allowed here`);
         // A public-looking name can still point at a private address: look before connecting. (A name that

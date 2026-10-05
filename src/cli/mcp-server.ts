@@ -16,13 +16,13 @@ import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { dirSkills, type Guidance, type ModelProvider } from '../index.ts';
+import { type Guidance, type ModelProvider } from '../index.ts';
 import { standardToolsets } from '../toolkit/index.ts';
 import { E, RpcError } from './acp.ts';
 import { home } from './config.ts';
 import { loadStrategy } from './gym/strategy.ts';
 import { STARTER } from './models.ts';
-import { createSession } from './session.ts';
+import { cliSkills, createSession } from './session.ts';
 import { unattended } from './unattended.ts';
 
 type Json = Record<string, unknown>;
@@ -59,6 +59,8 @@ export interface McpServeOptions {
   allowShell?: string[];
   web?: boolean;
   webLocal?: boolean;
+  /** More folders of skills, looked in first. False: no skills at all. */
+  skills?: string[] | false;
   cwd?: string;
 }
 
@@ -97,7 +99,7 @@ export async function serveMcp(o: McpServeOptions): Promise<void> {
       model,
       root: cwd,
       toolsets: unattended(standardToolsets({ root: cwd, web: o.web !== false, webOptions: { allowPrivate: !!o.webLocal } }), { autoApprove: o.autoApprove, allowShell: o.allowShell }),
-      skills: dirSkills(join(cwd, '.claude', 'skills'), join(homedir(), '.claude', 'skills')),
+      skills: o.skills === false ? undefined : cliSkills(cwd, o.skills),
       guidance: strategy ? strategy.guidance : (o.guidance ?? 'auto'),
       strategy: strategy ?? undefined,
       maxUsd: args.max_usd !== undefined ? Number(args.max_usd) : (o.maxUsd ?? 0.5),

@@ -32,7 +32,7 @@ Every `src/*.ts` opens with a doc comment saying *why* it exists. Match that whe
 - `src/hooks.ts`: `beforeStep` / `toolGate` / `rewriteOutput` / `stopCheck`, `combineHooks`
 - `src/jev.ts`: Jev behind app-owned hooks (`jevStopCheck`, `jevToolGate`), `ask`
 - `src/consult.ts`: `ask_jev` (offered at every step by default) and `ask_model`
-- `src/skills.ts`: skill sources (inline, on disk), Jev's pick, `use_skill` / `read_skill_file`
+- `src/skills.ts`: skill sources (inline, on disk), Jev's pick, `use_skill` / `read_skill_file`. Where the CLI looks is one function, `cliSkills` in `src/cli/session.ts` (`--skills` folders, then `.claude/skills` and `.agents/skills` in the folder and the home): every entry point uses it, so they never disagree
 - `src/budget.ts`: limits and the USD cap
 - `src/events.ts`: `AgentEvent`, `eventLog()`
 - `src/seams.ts`: `AgentTask`, `AgentResult`, `PromptPack` and its generic defaults, memory, sessions, approve, post-processors

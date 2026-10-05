@@ -1,7 +1,7 @@
 // agento as an A2A server (Agent2Agent 1.0): the card, both bindings, the task life cycle. Offline, $0.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 process.env.HOME = mkdtempSync(join(tmpdir(), 'agento-a2a-userhome-'));
 process.env.AGENTO_HOME = mkdtempSync(join(tmpdir(), 'agento-a2a-home-'));
 const { scriptedModel } = await import('../src/index.ts');
-const { a2aHandler, agentoExecutor, fileHistory, fileStore, serveA2a, CARD_PATH } = await import('../src/cli/a2a.ts');
+const { a2aHandler, agentoExecutor, cardSkills, fileHistory, fileStore, serveA2a, CARD_PATH } = await import('../src/cli/a2a.ts');
+const { cliSkills } = await import('../src/cli/session.ts');
 type Executor = Parameters<typeof serveA2a>[0]['executor'];
 
 let n = 0;
@@ -378,6 +379,38 @@ const watch = async (h: Handler, method: string, params: Msg) => (await (await h
   const offered = (two.requests[0]?.tools ?? []).map(t => t.name);
   assert.ok(offered.includes('web_fetch') && !offered.includes('read_file') && !offered.includes('list_dir'), 'files: false leaves the web tools only');
   ok('fileHistory across instances; files: false');
+}
+
+// 14 · skills: found in the folders agents share, listed in the card, offered to the model
+{
+  const skill = (dir: string, name: string, description: string) => {
+    mkdirSync(join(dir, name), { recursive: true });
+    writeFileSync(join(dir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\nDo it this way.\n`);
+  };
+  const shipped = folder();
+  const ws = folder();
+  skill(shipped, 'pdf', 'Read and fill PDF forms.');
+  skill(join(ws, '.agents', 'skills'), 'notes', 'Take meeting notes.');
+  skill(join(ws, '.claude', 'skills'), 'pdf', 'A second pdf skill, which loses to the one named with --skills.');
+  const listed = await cardSkills(cliSkills(ws, [shipped]));
+  assert.deepEqual(listed.map(s => s.id), ['run_task', 'pdf', 'notes'], '--skills first, then .claude/skills and .agents/skills of the folder');
+  assert.deepEqual(listed[1], { id: 'pdf', name: 'pdf', description: 'Read and fill PDF forms.', tags: ['skill'] });
+  assert.deepEqual((await cardSkills(undefined)).map(s => s.id), ['run_task'], 'no skills: the general one alone');
+
+  const a = agento(['ok'], { cwd: ws, skills: [shipped] });
+  const c = await caller(a.executor, { card: { skills: listed } });
+  const card = (await (await fetch(`${c.server.url}${CARD_PATH}`)).json()) as Msg;
+  assert.deepEqual(card.skills.map((s: Msg) => s.id), ['run_task', 'pdf', 'notes'], 'a caller reads what the agent is good at');
+  await c.send('fill this form');
+  assert.ok((a.provider.requests[0]?.tools ?? []).some(t => t.name === 'use_skill'), 'and the model can load them');
+  await c.server.close();
+
+  const none = agento(['ok'], { cwd: ws, skills: false });
+  const c2 = await caller(none.executor);
+  await c2.send('x');
+  assert.ok(!(none.provider.requests[0]?.tools ?? []).some(t => t.name === 'use_skill'), '--no-skills');
+  await c2.server.close();
+  ok('skills: --skills, .claude/skills, .agents/skills; in the card; offered to the model');
 }
 
 console.log(`${n} cases`);

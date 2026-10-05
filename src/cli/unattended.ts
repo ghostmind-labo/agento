@@ -13,6 +13,7 @@
 import type { Toolset } from '../index.ts';
 import { shellAllowed } from './acp.ts';
 
+
 export interface Unattended {
   autoApprove?: boolean;
   allowShell?: string[];

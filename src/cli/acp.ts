@@ -28,12 +28,12 @@ import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { dirSkills, type ApprovalRequest, type Guidance, type ModelProvider, type Toolset } from '../index.ts';
+import { type ApprovalRequest, type Guidance, type ModelProvider, type Toolset } from '../index.ts';
 import { home } from './config.ts';
 import { loadStrategy } from './gym/strategy.ts';
 import { connectSpecs, fromAcpMcp, mcpAvailable, type AcpMcpServer, type McpConnection } from './mcp.ts';
 import { CURATED, labelOf, STARTER } from './models.ts';
-import { createSession, type Answer, type Session } from './session.ts';
+import { cliSkills, createSession, type Answer, type Session } from './session.ts';
 import { standardToolsets } from '../toolkit/index.ts';
 import { describeCall } from './ui.ts';
 
@@ -73,6 +73,8 @@ export interface AcpOptions {
   /** The web tools (default on) and whether they may reach local and private addresses (default off). */
   web?: boolean;
   webLocal?: boolean;
+  /** More folders of skills, looked in first. False: no skills at all. */
+  skills?: string[] | false;
 }
 
 interface Turn {
@@ -317,7 +319,7 @@ export async function serveAcp(o: AcpOptions): Promise<void> {
         model,
         root: cwd,
         toolsets,
-        skills: dirSkills(join(cwd, '.claude', 'skills'), join(homedir(), '.claude', 'skills')),
+        skills: o.skills === false ? undefined : cliSkills(cwd, o.skills),
         guidance: strategy ? strategy.guidance : (o.guidance ?? 'auto'),
         strategy: strategy ?? undefined,
         maxUsd: o.maxUsd ?? 0.5,

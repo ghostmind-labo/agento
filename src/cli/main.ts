@@ -20,13 +20,13 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createInterface, type Interface } from 'node:readline/promises';
-import { dirSkills, ModelError, modelCatalog, openrouter, type Guidance, type ModelCard, type Toolset } from '../index.ts';
+import { ModelError, modelCatalog, openrouter, type Guidance, type ModelCard, type Toolset } from '../index.ts';
 import { home, pickable, price, readConfig, resolveModel, writeConfig } from './config.ts';
 import { capable, labelOf, offered } from './models.ts';
 import { pick, type Item } from './picker.ts';
 import { loadStrategy } from './gym/strategy.ts';
 import { connectAll, type McpConnection } from './mcp.ts';
-import { createSession, type Answer } from './session.ts';
+import { cliSkills, createSession, type Answer } from './session.ts';
 import { standardToolsets } from '../toolkit/index.ts';
 import { c, isStyle, printer, STYLES, summary, type Style } from './ui.ts';
 
@@ -42,6 +42,7 @@ const { values: flags, positionals } = parseArgs({
     style: { type: 'string', short: 's' },
     'no-mcp': { type: 'boolean' },
     'no-skills': { type: 'boolean' },
+    skills: { type: 'string', multiple: true },
     'no-shell': { type: 'boolean' },
     'no-web': { type: 'boolean' },
     'web-local': { type: 'boolean' },
@@ -95,6 +96,7 @@ const HELP = `agento — the agent core in a terminal
                              (+ results, Jev scoring, costs). Default: saved with /style, else normal
   -v, --verbose              same as --style verbose
       --no-mcp --no-skills --no-shell --no-web    leave a kind of tool out
+      --skills <dir>         one more folder of skills (repeatable), looked in before .claude/skills and .agents/skills
       --web-local            let web_fetch reach localhost and private networks (off by default)
 
 In the chat:  /model            pick from the list (↑↓, type to filter; then save as default)
@@ -135,6 +137,7 @@ async function listModels(filter: string | undefined, all: boolean, write: (s: s
 }
 
 const [sub, subArg] = positionals;
+const skillDirs = (flags.skills ?? []).map(d => resolve(d));
 if (sub === 'models' || flags.models) {
   await listModels(sub === 'models' ? subArg : sub, !!flags.all, s => process.stdout.write(s));
   process.exit(0);
@@ -272,6 +275,7 @@ if (sub === 'acp') {
     allowShell: flags['allow-shell'],
     web: !flags['no-web'],
     webLocal: !!flags['web-local'],
+    skills: flags['no-skills'] ? false : skillDirs,
   });
   process.exit(0);
 }
@@ -294,6 +298,7 @@ if (sub === 'mcp') {
     allowShell: flags['allow-shell'],
     web: !flags['no-web'],
     webLocal: !!flags['web-local'],
+    skills: flags['no-skills'] ? false : skillDirs,
     cwd: resolve(flags.cwd ?? process.cwd()),
   });
   process.exit(0);
@@ -301,7 +306,7 @@ if (sub === 'mcp') {
 
 // `agento a2a`: the agent as an A2A server (Agent2Agent 1.0) over HTTP. It runs until it is stopped.
 if (sub === 'a2a') {
-  const { agentoExecutor, fileHistory, fileStore, serveA2a, CARD_PATH } = await import('./a2a.ts');
+  const { agentoExecutor, cardSkills, fileHistory, fileStore, serveA2a, CARD_PATH } = await import('./a2a.ts');
   const kept = flags.store ? resolve(flags.store) : undefined;
   const host = flags.host ?? '127.0.0.1';
   const token = process.env.A2A_TOKEN || undefined;
@@ -316,6 +321,8 @@ if (sub === 'a2a') {
     publicUrl: flags['public-url'],
     token,
     store: kept ? fileStore(kept) : undefined,
+    // The card lists the skills this agent has, so a caller can tell what it is good at.
+    card: { skills: await cardSkills(flags['no-skills'] ? undefined : cliSkills(resolve(flags.cwd ?? process.cwd()), skillDirs)) },
     streaming: !flags['no-streaming'],
     log: s => void process.stderr.write(s),
     executor: agentoExecutor({
@@ -330,6 +337,7 @@ if (sub === 'a2a') {
       allowShell: flags['allow-shell'],
       web: !flags['no-web'],
       webLocal: !!flags['web-local'],
+      skills: flags['no-skills'] ? false : skillDirs,
       cwd: resolve(flags.cwd ?? process.cwd()),
     }),
   });
@@ -381,7 +389,7 @@ if (!flags['no-mcp']) {
   mcp = await connectAll(root, text => out(c.yellow(`${text}\n`)));
   for (const m of mcp) if (m.toolset) toolsets.push(m.toolset);
 }
-const skills = flags['no-skills'] ? undefined : dirSkills(join(root, '.claude', 'skills'), join(homedir(), '.claude', 'skills'));
+const skills = flags['no-skills'] ? undefined : cliSkills(root, skillDirs);
 
 // ── approvals ──
 const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {

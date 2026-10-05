@@ -164,6 +164,15 @@ interface TaskRecord extends StoredTask {
   saving: Promise<void>;
 }
 
+/** What the card offers when nothing more specific is given: any task, in words. */
+export const RUN_TASK_SKILL = {
+  id: 'run_task',
+  name: 'Run a task',
+  description: 'Works on a self-contained task and returns the answer as a text artifact. Asks back (input required) when it cannot go on without the caller.',
+  tags: ['agent', 'files', 'web', 'research'],
+  examples: ['Summarize what this folder contains.', 'Find the latest stable version of Node.js and name the page you read it on.'],
+};
+
 const toParts = (p: Part[] | string): Part[] => (typeof p === 'string' ? [{ text: p }] : p);
 const CONTENT = ['text', 'raw', 'url', 'data'];
 const PUSH = new Set(['CreateTaskPushNotificationConfig', 'GetTaskPushNotificationConfig', 'ListTaskPushNotificationConfigs', 'DeleteTaskPushNotificationConfig']);
@@ -197,15 +206,7 @@ export function a2aHandler(o: A2aHandlerOptions): A2aHandler {
     capabilities: { streaming, pushNotifications: false, extendedAgentCard: false },
     defaultInputModes: inputModes,
     defaultOutputModes: outputModes,
-    skills: o.card?.skills ?? [
-      {
-        id: 'run_task',
-        name: 'Run a task',
-        description: 'Works on a self-contained task and returns the answer as a text artifact. Asks back (input required) when it cannot go on without the caller.',
-        tags: ['agent', 'files', 'web', 'research'],
-        examples: ['Summarize what this folder contains.', 'Find the latest stable version of Node.js and name the page you read it on.'],
-      },
-    ],
+    skills: o.card?.skills ?? [RUN_TASK_SKILL],
     ...(o.token ? { securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } }, securityRequirements: [{ schemes: { bearer: { list: [] } } }] } : {}),
   });
 

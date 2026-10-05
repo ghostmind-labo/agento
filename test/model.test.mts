@@ -1,6 +1,6 @@
 // The OpenRouter client against a mocked fetch: chat, streaming, Jev, errors, the catalogue. Offline.
 import assert from 'node:assert/strict';
-import { forgetCatalog, ModelError, modelCatalog, openrouter } from '../src/index.ts';
+import { forgetCatalog, hostedShell, ModelError, modelCatalog, openrouter, type ChatMessage, type ServerToolCall } from '../src/index.ts';
 
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
@@ -161,6 +161,109 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
   assert.ok(!(aborted instanceof ModelError), 'the abort surfaces as itself');
   assert.equal(calls, 1);
   ok('network errors: retried, then code network; an abort is left alone');
+}
+
+// The shapes below are OpenRouter's own, as a live call returned them (2026-10-05).
+const shellItem = (id: string, command: string, stdout: string, exit = 0) => ({
+  type: 'openrouter:shell', id: `st_${id}`, status: 'completed', call_id: id, container_id: 'gen_x',
+  action: { commands: [command], max_output_length: null, timeout_ms: null },
+  output: [{ stdout, stderr: '', outcome: { type: 'exit', exit_code: exit } }],
+  arguments: JSON.stringify({ commands: [command] }),
+});
+const reasoning = { id: 'rs_1', type: 'reasoning', status: 'completed', content: [{ type: 'reasoning_text', text: 'thinking' }], summary: [] };
+const said = (text: string) => ({ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] });
+
+// 8 · the Responses API: server tools beside function tools, the conversation as input items, what a server tool did reported and carried on
+{
+  const replies = [
+    { model: 'vendor/m-2026', status: 'completed', output: [reasoning, shellItem('c1', 'python3 -c "print(17*23)"', '391\n'), { id: 'fc_1', type: 'function_call', status: 'completed', call_id: 'f1', name: 'f', arguments: '{"x":1}' }], usage: { cost: 0.0032, cost_details: { server_tool_cost: 0.003 } } },
+    { model: 'vendor/m-2026', status: 'completed', output: [said('391, and f says ok.')], usage: { cost: 0.0001 } },
+  ];
+  const m = mock(() => json(replies.shift()));
+  const p = openrouter({ apiKey: 'k', model: 'vendor/m', fetch: m.fetch, serverTools: [hostedShell()] });
+  const seen: ServerToolCall[] = [];
+  const tools = [{ name: 'f', description: 'F', parameters: { type: 'object' } }];
+  const messages: ChatMessage[] = [{ role: 'system', content: 'S' }, { role: 'user', content: 'go' }];
+  const first = await p.chat({ messages, tools, onServerTool: call => seen.push(call) });
+
+  const sent = JSON.parse(String(m.seen[0]!.init.body));
+  assert.equal(m.seen[0]!.url, 'https://openrouter.ai/api/v1/responses');
+  assert.deepEqual(sent.input, [{ role: 'system', content: 'S' }, { role: 'user', content: 'go' }]);
+  assert.deepEqual(sent.tools, [{ type: 'openrouter:shell', parameters: { engine: 'openrouter' } }, { type: 'function', name: 'f', description: 'F', parameters: { type: 'object' } }]);
+  assert.equal(sent.tool_choice, 'auto');
+  assert.equal(sent.max_output_tokens, 4096);
+  assert.deepEqual(sent.provider, { require_parameters: true });
+  assert.ok(!('messages' in sent) && !('stream' in sent));
+
+  // the function call is the loop's to run; the shell call already ran, and is reported with its output
+  assert.deepEqual(first.message, { role: 'assistant', content: null, tool_calls: [{ id: 'f1', type: 'function', function: { name: 'f', arguments: '{"x":1}' } }] });
+  assert.equal(first.finishReason, 'tool_calls');
+  assert.equal(first.cost, 0.0032, 'the cost is the call as billed, sandbox time included');
+  assert.equal(first.model, 'vendor/m-2026');
+  assert.deepEqual(seen, [{ id: 'c1', name: 'openrouter:shell', args: { commands: ['python3 -c "print(17*23)"'], max_output_length: null, timeout_ms: null }, ok: true, result: '391' }]);
+
+  // the next step: nothing is kept on OpenRouter's side, so the shell item goes back as it came, before that step's own call
+  messages.push(first.message, { role: 'tool', tool_call_id: 'f1', content: 'ok' });
+  const second = await p.chat({ messages, tools, toolChoice: 'none' });
+  const next = JSON.parse(String(m.seen[1]!.init.body));
+  assert.deepEqual(next.input.slice(2), [shellItem('c1', 'python3 -c "print(17*23)"', '391\n'), { type: 'function_call', call_id: 'f1', name: 'f', arguments: '{"x":1}' }, { type: 'function_call_output', call_id: 'f1', output: 'ok' }]);
+  assert.equal(next.tool_choice, 'none');
+  assert.deepEqual(second.message, { role: 'assistant', content: '391, and f says ok.' });
+  assert.equal(second.finishReason, 'stop');
+
+  // a command that failed, one that timed out; `api: 'responses'` alone (no server tool); a chat provider is unchanged
+  const bad = mock(() => json({ status: 'completed', output: [shellItem('c2', 'false', '', 1), { ...shellItem('c3', 'sleep 999', ''), output: [{ stdout: 'x', stderr: 'late', outcome: { type: 'timeout' } }] }, said('done')], usage: { cost: 0 } }));
+  const calls: ServerToolCall[] = [];
+  await openrouter({ apiKey: 'k', model: 'm', fetch: bad.fetch, serverTools: [hostedShell({ environment: { type: 'container_auto' } })] }).chat({ messages: [], onServerTool: c => calls.push(c) });
+  assert.deepEqual(calls.map(c => [c.ok, c.result]), [[false, '(exit code 1)'], [false, 'x\nstderr: late\n(timed out)']]);
+  assert.deepEqual(JSON.parse(String(bad.seen[0]!.init.body)).tools[0], { type: 'openrouter:shell', parameters: { engine: 'openrouter', environment: { type: 'container_auto' } } });
+  const plain = mock(() => json({ status: 'completed', output: [said('hi')], usage: { cost: 0 } }));
+  await openrouter({ apiKey: 'k', model: 'm', fetch: plain.fetch, api: 'responses' }).chat({ messages: [{ role: 'user', content: 'hi' }] });
+  assert.ok(plain.seen[0]!.url.endsWith('/responses') && !('tools' in JSON.parse(String(plain.seen[0]!.init.body))));
+  assert.throws(() => openrouter({ apiKey: 'k', api: 'chat', serverTools: [hostedShell()] }), /Server tools need the Responses API/);
+  // a reply that may call nothing and is shown no tool (small talk) is not offered the shell
+  const quiet = mock(() => json({ status: 'completed', output: [said('hello')], usage: { cost: 0 } }));
+  await openrouter({ apiKey: 'k', model: 'm', fetch: quiet.fetch, serverTools: [hostedShell()] }).chat({ messages: [{ role: 'user', content: 'hi' }], toolChoice: 'none' });
+  assert.ok(!('tools' in JSON.parse(String(quiet.seen[0]!.init.body))));
+  const failed = mock(() => json({ status: 'failed', error: { message: 'no provider runs this tool' }, output: [] }));
+  await assert.rejects(openrouter({ apiKey: 'k', model: 'm', fetch: failed.fetch, api: 'responses' }).chat({ messages: [] }), /no provider runs this tool/);
+  ok('responses: server tools + function tools, input items, shell calls reported and carried to the next step, cost as billed');
+}
+
+// 9 · the Responses API, streamed: text as it comes, a server tool the moment it has its result (once), the reply from the last event
+{
+  const item = shellItem('c1', 'echo hi', 'hi\n');
+  const done = { model: 'vendor/m-2026', status: 'completed', output: [reasoning, item, said('It printed hi.')], usage: { cost: 0.0031 } };
+  const events = [
+    { type: 'response.created', response: { status: 'in_progress', output: [] } },
+    { type: 'response.reasoning_text.delta', delta: 'thinking' },
+    { type: 'response.output_item.done', item: reasoning },
+    { type: 'response.output_item.done', item },
+    { type: 'response.output_text.delta', delta: 'It printed ' },
+    { type: 'response.output_text.delta', delta: 'hi.' },
+    { type: 'response.completed', response: done },
+  ];
+  const sse = (list: unknown[]) => new Response(list.map(e => `: keep-alive\n\ndata: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+  const order: string[] = [];
+  const m = mock(() => sse(events));
+  const r = await openrouter({ apiKey: 'k', model: 'vendor/m', fetch: m.fetch, serverTools: [hostedShell()] }).chat({
+    messages: [{ role: 'user', content: 'run echo hi' }],
+    onDelta: text => order.push(`delta:${text}`),
+    onServerTool: call => order.push(`tool:${call.name}:${call.result}`),
+  });
+  assert.equal(JSON.parse(String(m.seen[0]!.init.body)).stream, true);
+  assert.deepEqual(order, ['tool:openrouter:shell:hi', 'delta:It printed ', 'delta:hi.']);
+  assert.deepEqual(r, { message: { role: 'assistant', content: 'It printed hi.' }, finishReason: 'stop', model: 'vendor/m-2026', cost: 0.0031 });
+
+  // a stream that fails before anything arrived is tried again; one that fails after is not
+  let tries = 0;
+  const flaky = mock(() => (++tries === 1 ? sse([{ type: 'response.failed', response: { error: { message: 'overloaded', code: 529 } } }]) : sse(events)));
+  await openrouter({ apiKey: 'k', model: 'm', fetch: flaky.fetch, api: 'responses', retryDelayMs: 1 }).chat({ messages: [], onDelta: () => {} });
+  assert.equal(tries, 2);
+  const late = mock(() => sse([events[4], { type: 'error', error: { message: 'overloaded', code: 529 } }]));
+  const error = await openrouter({ apiKey: 'k', model: 'm', fetch: late.fetch, api: 'responses', retryDelayMs: 1 }).chat({ messages: [], onDelta: () => {} }).catch((e: unknown) => e);
+  assert.ok(error instanceof ModelError && !error.retryable && late.seen.length === 1);
+  ok('responses, streamed: deltas, the server tool once and as soon as it ran, retried only before anything arrived');
 }
 
 console.log(`${n} cases`);

@@ -4,11 +4,17 @@
  * The package names no model of its own, so the person picks one, once, from the live catalogue,
  * and it is saved here as the default. Precedence when the CLI starts: `--model`, then
  * `AGENT_MODEL`, then this saved default; with none of them, the picker opens.
+ *
+ * Also here: where commands run (`shell`). `local` is this machine's own shell, each command with the
+ * person's approval, and is the default: a command-line agent has a shell already. `openrouter` is
+ * OpenRouter's hosted shell instead: commands run in a sandbox on OpenRouter's side, billed to the
+ * key's account, and never touch this machine or see its files. It is never on unless the person
+ * chooses it (`--shell openrouter`, or `/shell openrouter` to save it).
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ModelCard } from '../index.ts';
+import { hostedShell, openrouter, type ModelCard, type ModelProvider } from '../index.ts';
 
 export const home = (): string => process.env.AGENTO_HOME || join(homedir(), '.agento');
 
@@ -17,7 +23,24 @@ export interface Config {
   model?: string;
   /** The default output style: minimal | normal | verbose. */
   style?: string;
+  /** Where commands run: local (the default) | openrouter. */
+  shell?: string;
 }
+
+export const SHELLS = ['local', 'openrouter'] as const;
+export type Shell = (typeof SHELLS)[number];
+export const isShell = (value: unknown): value is Shell => SHELLS.includes(value as Shell);
+
+/** Where commands run, first match wins: the flag, then the saved setting, then this machine. */
+export const resolveShell = (flag: string | undefined, config: Config): Shell => (isShell(flag) ? flag : isShell(config.shell) ? config.shell : 'local');
+
+/** The command line's provider: the worker through OpenRouter, with its hosted shell when that is where commands run. */
+export const cliProvider = (model: string | undefined, shell: Shell = 'local', title = 'agento'): ModelProvider =>
+  openrouter({ model, headers: { 'X-Title': title }, ...(shell === 'openrouter' ? { serverTools: [hostedShell()] } : {}) });
+
+/** What the model is told when its commands run on OpenRouter's side and not here. */
+export const HOSTED_SHELL_NOTE =
+  'Shell commands do not run on this machine here: the shell you have (openrouter:shell) is a hosted sandbox with no network and none of this folder\'s files. Use it to compute or to try code; to work on the folder, use the file tools, and pass a file\'s content into the sandbox yourself when a command needs it.';
 
 const file = () => join(home(), 'config.json');
 

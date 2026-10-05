@@ -9,7 +9,7 @@
 export { runAgent, subagentTool, passNode, parseLeakedCalls, leakFilter, LEAKED_CALL } from './loop.ts';
 export type { AgentOptions, SubagentSpec, DecisionNode, NodeOutcome } from './loop.ts';
 
-export { openrouter, modelCatalog, forgetCatalog, ModelError, OPENROUTER_URL, DEFAULT_DECISION_MODEL } from './model.ts';
+export { openrouter, hostedShell, modelCatalog, forgetCatalog, ModelError, OPENROUTER_URL, DEFAULT_DECISION_MODEL } from './model.ts';
 export type {
   ModelProvider,
   OpenRouterConfig,
@@ -24,6 +24,8 @@ export type {
   DecideReply,
   ModelCard,
   ModelErrorCode,
+  ServerTool,
+  ServerToolCall,
 } from './model.ts';
 
 export { foldTools, mcpToolset, forgivingArgs, readCall, stableJson } from './tools.ts';

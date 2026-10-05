@@ -21,7 +21,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createInterface, type Interface } from 'node:readline/promises';
 import { ModelError, modelCatalog, openrouter, type Guidance, type ModelCard, type Toolset } from '../index.ts';
-import { home, pickable, price, readConfig, resolveModel, writeConfig } from './config.ts';
+import { cliProvider, home, HOSTED_SHELL_NOTE, isShell, pickable, price, readConfig, resolveModel, resolveShell, SHELLS, writeConfig } from './config.ts';
 import { capable, labelOf, offered } from './models.ts';
 import { pick, type Item } from './picker.ts';
 import { loadStrategy } from './gym/strategy.ts';
@@ -51,6 +51,7 @@ const { values: flags, positionals } = parseArgs({
     env: { type: 'string', multiple: true },
     path: { type: 'string' },
     'no-shell': { type: 'boolean' },
+    shell: { type: 'string' },
     'no-web': { type: 'boolean' },
     'web-local': { type: 'boolean' },
     models: { type: 'boolean' },
@@ -109,6 +110,8 @@ const HELP = `agento — the agent core in a terminal
                              (+ results, Jev scoring, costs). Default: saved with /style, else normal
   -v, --verbose              same as --style verbose
       --no-mcp --no-skills --no-shell --no-web    leave a kind of tool out
+      --shell <where>        where commands run: local (this machine, with approval; the default) or
+                             openrouter (OpenRouter's hosted sandbox, billed to your key). Saved with /shell
       --skills <dir>         one more folder of skills (repeatable), looked in before .claude/skills and .agents/skills
       --plugin <dir>         load an Agent Plugin from a folder without installing it (repeatable)
       --web-local            let web_fetch reach localhost and private networks (off by default)
@@ -117,6 +120,7 @@ In the chat:  /model            pick from the list (↑↓, type to filter; then
               /model <id>       switch for this session     /default [id]  save as the default
               /models [filter]  /guidance [level]  /budget [usd]  /cost  /tools  /mcp  /skills  /plugins
               /style [minimal|normal|verbose]  (saved as default)   /strategy  what training learned
+              /shell [local|openrouter]  where commands run (saved; applies from the next start)
               /auto  /log  /clear  /help  /exit                               Ctrl+C stops a turn`;
 
 if (flags.help) {
@@ -407,7 +411,13 @@ const style: Style = (styleArg as Style | undefined) ?? (isStyle(saved) ? saved 
 const print = printer(out, { stream: true, style });
 
 // ── tools ──
-const toolsets: Toolset[] = standardToolsets({ root, shell: !flags['no-shell'], web: !flags['no-web'], webOptions: { allowPrivate: !!flags['web-local'] } });
+if (flags.shell !== undefined && !isShell(flags.shell)) {
+  console.error(`--shell must be one of: ${SHELLS.join(', ')}`);
+  process.exit(2);
+}
+// Where commands run: this machine's shell (run_command, with approval) or OpenRouter's hosted one, never both.
+const shell = flags['no-shell'] ? 'local' : resolveShell(flags.shell, readConfig());
+const toolsets: Toolset[] = standardToolsets({ root, shell: !flags['no-shell'] && shell === 'local', web: !flags['no-web'], webOptions: { allowPrivate: !!flags['web-local'] } });
 // "Install this plugin": the agent can do what `agento plugin | skill | mcp add` does, each time with the person's approval.
 toolsets.push((await import('./manage.ts')).extendToolset(root, { skills: skillDirs, plugin: pluginDirs }));
 let mcp: McpConnection[] = [];
@@ -433,11 +443,12 @@ const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {
 const strategy = loadStrategy(model);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const session = createSession({
-  provider: openrouter({ model, headers: { 'X-Title': 'agento' } }),
+  provider: cliProvider(model, shell),
   model,
   root,
   toolsets,
   skills,
+  notes: shell === 'openrouter' ? [HOSTED_SHELL_NOTE] : undefined,
   // An explicit --guidance wins; otherwise what training settled on for this model.
   guidance: flags.guidance || !strategy ? guidance : strategy.guidance,
   strategy: strategy ?? undefined,
@@ -563,6 +574,15 @@ async function command(line: string): Promise<boolean> {
         writeConfig({ style: next });
       }
       out(`style: ${print.style}${next ? c.dim(' (saved as default)') : c.dim(` — ${STYLES.join(' · ')}`)}\n`);
+      break;
+    }
+    case 'shell': {
+      if (arg && !isShell(arg)) {
+        out(`shells: ${SHELLS.join(', ')}\n`);
+        break;
+      }
+      if (arg) writeConfig({ shell: arg });
+      out(`shell: ${arg || shell}${arg ? c.dim(arg === shell ? ' (saved as default)' : ' (saved as default; applies from the next start)') : c.dim(' — local: this machine, with approval · openrouter: a hosted sandbox, billed to your key')}\n`);
       break;
     }
     case 'strategy':

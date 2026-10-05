@@ -19,6 +19,14 @@
  * on every response (which is what makes a USD budget possible at all), and zero runtime
  * dependencies. No worker model id is written here: the app names its model, and `modelCatalog()`
  * reads OpenRouter's live list when a price or a capability matters.
+ *
+ * The worker is called through chat completions by default. `api: 'responses'` (or any `serverTools`)
+ * makes the same call in OpenRouter's Responses shape, which is the one that can carry SERVER TOOLS:
+ * tools OpenRouter itself runs while the model is answering, like its hosted shell (`hostedShell()`),
+ * where code runs in OpenRouter's sandbox, on the key's account, and never on the machine the engine
+ * is on. The loop does not run those and is not asked: it is told (`onServerTool`) so they are logged
+ * and shown like any other tool. An app that runs for strangers gets code execution that way; a
+ * command-line agent on the person's own machine has a shell already and leaves it off.
  */
 
 export const OPENROUTER_URL = 'https://openrouter.ai/api/v1';
@@ -64,7 +72,35 @@ export interface ChatRequest {
   toolChoice?: 'auto' | 'none';
   /** Ask for a JSON object as the reply (providers that support it). */
   json?: boolean;
+  /** Called once for each server tool the provider ran during this call, when it has its result. */
+  onServerTool?: (call: ServerToolCall) => void;
 }
+
+/**
+ * A tool the PROVIDER runs during the model call, named by its type (`openrouter:shell`). Its
+ * `parameters` are the provider's own and are sent as they are.
+ */
+export interface ServerTool {
+  type: string;
+  parameters?: Record<string, unknown>;
+}
+
+/** One server tool call, after it ran: what the model asked for and what came back, as text. */
+export interface ServerToolCall {
+  id: string;
+  /** The tool's type, e.g. `openrouter:shell`. */
+  name: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  result: string;
+}
+
+/**
+ * OpenRouter's hosted shell as a server tool: the model runs commands in a sandbox OpenRouter makes
+ * (no network unless a `network_policy` allows hosts), billed to the key's account by the second.
+ * `parameters` are OpenRouter's (`environment`, `sleep_after_seconds`…) and override the defaults.
+ */
+export const hostedShell = (parameters: Record<string, unknown> = {}): ServerTool => ({ type: 'openrouter:shell', parameters: { engine: 'openrouter', ...parameters } });
 
 export interface ChatReply {
   message: AssistantMessage;
@@ -149,7 +185,109 @@ export interface OpenRouterConfig {
   retries?: number;
   /** The first backoff; it doubles each try (capped at 8 s) unless the provider sends Retry-After. Default 600 ms. */
   retryDelayMs?: number;
+  /**
+   * How the worker is called: `chat` (chat completions, the default) or `responses` (OpenRouter's
+   * Responses API). Server tools exist only on `responses`, so naming any selects it.
+   */
+  api?: 'chat' | 'responses';
+  /** Tools OpenRouter runs during the call, offered at every step beside the loop's own (see `hostedShell`). */
+  serverTools?: ServerTool[];
   fetch?: typeof globalThis.fetch;
+}
+
+// ── the Responses shape ─────────────────────────────────────────────────────
+
+/** An item of a Responses `output` (and of the `input` that carries a conversation on). */
+type ResponseItem = Record<string, unknown> & { type?: string };
+
+interface ResponsesReply {
+  model?: string;
+  status?: string;
+  output?: ResponseItem[];
+  usage?: { cost?: number };
+  error?: OpenRouterErrorBody | null;
+  incomplete_details?: { reason?: string } | null;
+}
+
+/** Items the model writes itself. Every other item type is a server tool's. */
+const OWN_ITEMS = new Set(['message', 'reasoning', 'function_call']);
+
+/** What a server tool returned, as the text an event carries: a shell's commands read like a terminal. */
+function serverResult(item: ResponseItem): { ok: boolean; result: string } {
+  const outputs = Array.isArray(item.output) ? (item.output as Record<string, unknown>[]) : null;
+  if (!outputs) return { ok: item.status === 'completed', result: item.output === undefined ? String(item.status ?? '') : JSON.stringify(item.output) };
+  let ok = item.status === 'completed';
+  const lines: string[] = [];
+  for (const out of outputs) {
+    const outcome = out.outcome as { type?: string; exit_code?: number } | undefined;
+    if (typeof out.stdout === 'string' && out.stdout) lines.push(out.stdout.trimEnd());
+    if (typeof out.stderr === 'string' && out.stderr) lines.push(`stderr: ${out.stderr.trimEnd()}`);
+    if (outcome?.type === 'timeout') {
+      ok = false;
+      lines.push('(timed out)');
+    } else if (outcome?.type === 'exit' && outcome.exit_code !== 0) {
+      ok = false;
+      lines.push(`(exit code ${outcome.exit_code})`);
+    } else if (!outcome && !('stdout' in out)) lines.push(JSON.stringify(out));
+  }
+  return { ok, result: lines.join('\n') || '(no output)' };
+}
+
+function serverCall(item: ResponseItem): ServerToolCall {
+  let args: Record<string, unknown> = {};
+  if (item.action && typeof item.action === 'object') args = item.action as Record<string, unknown>;
+  else if (typeof item.arguments === 'string') {
+    try {
+      args = JSON.parse(item.arguments) as Record<string, unknown>;
+    } catch {
+      args = { arguments: item.arguments };
+    }
+  }
+  return { id: String(item.call_id ?? item.id ?? ''), name: String(item.type), args, ...serverResult(item) };
+}
+
+/**
+ * A chat conversation as a Responses `input`. The API keeps nothing between calls, so what a server
+ * tool did in an earlier step of the run is sent back as the item it came as (`kept`), ahead of that
+ * step's own words: without it the model would no longer know what its commands printed.
+ */
+function toInput(messages: ChatMessage[], kept: WeakMap<object, ResponseItem[]>): ResponseItem[] {
+  const input: ResponseItem[] = [];
+  for (const m of messages) {
+    if (m.role === 'tool') input.push({ type: 'function_call_output', call_id: m.tool_call_id, output: m.content });
+    else if (m.role === 'assistant') {
+      input.push(...(kept.get(m) ?? []));
+      if (m.content) input.push({ role: 'assistant', content: m.content });
+      for (const call of m.tool_calls ?? []) input.push({ type: 'function_call', call_id: call.id, name: call.function.name, arguments: call.function.arguments });
+    } else input.push({ role: m.role, content: m.content });
+  }
+  return input;
+}
+
+/** A finished Responses reply as the loop's ChatReply; `seen` holds the server calls already reported while streaming. */
+function fromResponse(json: ResponsesReply, fallbackModel: string, kept: WeakMap<object, ResponseItem[]>, onServerTool: ChatRequest['onServerTool'], seen: Set<string>, streamed?: string): ChatReply {
+  const output = json.output ?? [];
+  let content = '';
+  const calls: ToolCall[] = [];
+  const server: ResponseItem[] = [];
+  for (const item of output) {
+    if (item.type === 'message') {
+      for (const part of (item.content as { type?: string; text?: string }[] | undefined) ?? []) if (part.type === 'output_text' && part.text) content += part.text;
+    } else if (item.type === 'function_call') {
+      calls.push({ id: String(item.call_id ?? item.id), type: 'function', function: { name: String(item.name), arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments ?? {}) } });
+    } else if (item.type && !OWN_ITEMS.has(item.type)) {
+      server.push(item);
+      const call = serverCall(item);
+      if (!seen.has(call.id)) {
+        seen.add(call.id);
+        onServerTool?.(call);
+      }
+    }
+  }
+  const message: AssistantMessage = { role: 'assistant', content: (streamed ?? content) || null, ...(calls.length ? { tool_calls: calls } : {}) };
+  if (server.length) kept.set(message, server);
+  const cut = json.status === 'incomplete' ? (json.incomplete_details?.reason === 'max_output_tokens' ? 'length' : (json.incomplete_details?.reason ?? 'length')) : null;
+  return { message, finishReason: cut ?? (calls.length ? 'tool_calls' : 'stop'), model: json.model ?? fallbackModel, cost: json.usage?.cost ?? 0 };
 }
 
 interface StreamChunk {
@@ -226,6 +364,11 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
   const decisionModel = config.decisionModel ?? DEFAULT_DECISION_MODEL;
   const retries = config.retries ?? 3;
   const baseDelay = config.retryDelayMs ?? 600;
+  const serverTools = config.serverTools ?? [];
+  const responses = config.api === 'responses' || (config.api === undefined && serverTools.length > 0);
+  if (serverTools.length && !responses) throw new ModelError('failed', 'Server tools need the Responses API: leave `api` out, or set it to "responses".');
+  /** What a server tool did in an earlier step, by the assistant message of that step (see toInput). */
+  const kept = new WeakMap<object, ResponseItem[]>();
 
   /** Try again on a passing failure, backing off; never after the caller aborted. */
   const withRetry = async <T>(attempt: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
@@ -336,6 +479,102 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
     return { message: { role: 'assistant', content: content || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) }, finishReason, model, cost };
   };
 
+  /** One streamed attempt in the Responses shape. A failure is retryable only until the first text, call or server tool arrives. */
+  const streamResponseOnce = async (body: Record<string, unknown>, request: ChatRequest): Promise<ChatReply> => {
+    const res = await send(`${base}/responses`, { method: 'POST', headers: headers(), body: JSON.stringify({ ...body, stream: true }), signal: request.signal });
+    if (!res.ok || !res.body) throw await refusal(res);
+
+    let content = '';
+    let started = false;
+    let final: ResponsesReply | undefined;
+    const seen = new Set<string>();
+    const decoder = new TextDecoder();
+    const reader = res.body.getReader();
+    let buffer = '';
+
+    const fail = (e: OpenRouterErrorBody | null | undefined, fallback: string): never => {
+      const again = !started ? transientError(undefined, e ?? undefined, null, fallback) : null;
+      throw again ?? new ModelError('failed', `The model call failed: ${describeError(e ?? undefined, fallback)}`);
+    };
+    const take = (line: string) => {
+      if (!line.startsWith('data:')) return;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') return;
+      const event = JSON.parse(data) as { type?: string; delta?: string; item?: ResponseItem; response?: ResponsesReply; error?: OpenRouterErrorBody; message?: string; code?: number | string };
+      switch (event.type) {
+        case 'response.output_text.delta':
+          if (event.delta) {
+            started = true;
+            content += event.delta;
+            request.onDelta!(event.delta);
+          }
+          break;
+        case 'response.output_item.done': {
+          const item = event.item;
+          if (!item?.type) break;
+          if (item.type !== 'reasoning') started = true;
+          // A server tool is reported the moment it has its result, not when the whole reply ends.
+          if (!OWN_ITEMS.has(item.type)) {
+            const call = serverCall(item);
+            if (!seen.has(call.id)) {
+              seen.add(call.id);
+              request.onServerTool?.(call);
+            }
+          }
+          break;
+        }
+        case 'response.completed':
+        case 'response.incomplete':
+          final = event.response;
+          break;
+        case 'response.failed':
+          fail(event.response?.error, 'the response failed');
+          break;
+        case 'error':
+          fail(event.error ?? { message: event.message, code: event.code }, 'stream error');
+          break;
+        default:
+          if (event.error) fail(event.error, 'stream error');
+      }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        take(line);
+      }
+    }
+    if (buffer.trim()) take(buffer.trim());
+    if (!final) throw started ? new ModelError('no_answer', 'The model call ended before its reply was complete') : new ModelError('failed', 'The model call failed: the stream ended with no reply', { retryable: true });
+    return fromResponse(final, String(body.model), kept, request.onServerTool, seen, content || undefined);
+  };
+
+  /** The worker through the Responses API: the same request and the same reply as `chat`, plus server tools. */
+  const chatResponses = async (request: ChatRequest, model: string): Promise<ChatReply> => {
+    const { messages, tools, maxTokens = 4096, signal, onDelta, toolChoice = 'auto', json: wantJson = false } = request;
+    // A call that may use no tool and shows none (a short reply to small talk) is not given a server tool either.
+    const offered = [...(toolChoice === 'none' && !tools?.length ? [] : serverTools), ...(tools ?? []).map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters }))];
+    const body = {
+      model,
+      input: toInput(messages, kept),
+      max_output_tokens: maxTokens,
+      ...(offered.length ? { tools: offered, tool_choice: toolChoice } : {}),
+      // Only providers that honour tools; a provider that silently drops them would stall the loop.
+      provider: { require_parameters: true },
+      ...(wantJson ? { text: { format: { type: 'json_object' } } } : {}),
+    };
+    if (onDelta) return withRetry(() => streamResponseOnce(body, request), signal);
+    const json = await post<ResponsesReply>('/responses', body, signal);
+    if (json.status === 'failed') throw new ModelError('failed', `The model call failed: ${describeError(json.error ?? undefined, 'the response failed')}`);
+    if (!json.output?.length) throw new ModelError('no_answer', 'The model returned no answer');
+    return fromResponse(json, model, kept, request.onServerTool, new Set());
+  };
+
   return {
     defaultModel: config.model,
 
@@ -346,8 +585,10 @@ export function openrouter(config: OpenRouterConfig = {}): ModelProvider {
       return cards.find(c => c.id === model) ?? null;
     },
 
-    async chat({ model = config.model, messages, tools, maxTokens = 4096, signal, onDelta, toolChoice = 'auto', json: wantJson = false }) {
+    async chat(request) {
+      const { model = config.model, messages, tools, maxTokens = 4096, signal, onDelta, toolChoice = 'auto', json: wantJson = false } = request;
       if (!model) throw new ModelError('no_model', 'No model: pass `model` to openrouter() or to the request.');
+      if (responses) return chatResponses(request, model);
       const body = {
         model,
         messages,

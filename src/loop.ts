@@ -355,7 +355,8 @@ export async function runAgent(options: AgentOptions): Promise<AgentResult> {
         messages.push(note);
         emit({ type: 'context', message: note, transient: true });
         try {
-          const reply = await provider.chat({ model, messages, signal, maxTokens: 300, onDelta: stream ? text => emit({ type: 'delta', text }) : undefined });
+          // 'none': a provider with server tools (a hosted shell) must not offer them for one short reply.
+          const reply = await provider.chat({ model, messages, signal, maxTokens: 300, toolChoice: 'none', onDelta: stream ? text => emit({ type: 'delta', text }) : undefined });
           messages.pop();
           spend(reply.cost, 'worker');
           delete reply.message.tool_calls;
@@ -485,6 +486,13 @@ export async function runAgent(options: AgentOptions): Promise<AgentResult> {
         ...(tools.length ? { tools, toolChoice: hard ? ('none' as const) : ('auto' as const) } : {}),
         signal,
         onDelta: stream ? text => filter.push(text) : undefined,
+        // A tool the provider ran inside this call (a hosted shell): the loop neither gates nor approves it,
+        // but it is logged, shown and counted like one of its own.
+        onServerTool: call => {
+          toolCalls++;
+          emit({ type: 'tool_call', id: call.id, name: call.name, args: call.args });
+          emit({ type: 'tool_result', id: call.id, name: call.name, ok: call.ok, result: call.result.slice(0, L.resultCap) });
+        },
       });
       filter.end();
     } catch (error) {

@@ -177,7 +177,7 @@ agento models                           # the short list with live prices (--all
 - **Files:** read, list and search freely. Writing or editing a file asks first. It can't reach outside the folder it started in.
 - **Shell:** every command asks first.
 - **MCP servers:** from `.mcp.json` (Claude Code's format). This needs `@ghostmind-dev/ensemble` installed alongside, an *optional* peer dependency, so the package keeps zero runtime dependencies.
-- **Skills:** every `<name>/SKILL.md` in `.claude/skills` or `.agents/skills`, in the folder or in your home, plus any folder named with `--skills <dir>` (repeatable, looked in first; this is how a container ships its own). Jev picks which one a task needs. It is the same in the terminal, `agento acp`, `agento mcp` and `agento a2a`, and `--no-skills` turns them off.
+- **Skills:** every `<name>/SKILL.md` in `.claude/skills` or `.agents/skills`, in the folder or in your home, the ones you installed with `agento skill add`, the ones plugins bring, plus any folder named with `--skills <dir>` (repeatable, looked in first; this is how a container ships its own). Jev picks which one a task needs. It is the same in the terminal, `agento acp`, `agento mcp` and `agento a2a`, and `--no-skills` turns them off.
 
 Answers render as markdown in the terminal, including box-drawn tables fitted to the width. `agento train` trains the harness around a cheap model: fresh challenges each round, graded in code, and a change kept only if it clearly scores better. It rises through 5 difficulty levels, and agento uses what it learned. Output has three styles: `minimal`, `normal` and `verbose` (`--style`, or `/style` to save one). Only `verbose` shows Jev's scoring and per-turn costs. Each session is logged to `~/.agento/sessions/`. The engine names no model. agento, as an app, offers a short curated list of 16 models with tools and reasoning, each proven in an agent loop (the list Potion's Talk offers), in `src/cli/models.ts`. "Other model…" searches the whole catalogue. `agento model` saves your pick in `~/.agento/config.json`, `--model` overrides it for one run, and `AGENT_MODEL` forces one. `agento --help` lists the options. In this repo, `cli/scripts/agento.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
 
@@ -201,6 +201,44 @@ npm install -g @ghostmind-dev/agento
 - **MCP servers** the host passes are used. Remote ones need `@ghostmind-dev/ensemble` installed alongside (an optional peer).
 - **Cost:** each turn ends with a `usage_update` carrying the cost in USD, so a host with a budget (an ensemble graph, for one) can count it.
 - **Not yet:** the host's own file and terminal methods, `session/load`, images and audio.
+
+### Managing MCP servers, skills and plugins
+
+Three things extend the agent, and each has a command with the same three verbs. They only put files where agento already looks, so a file edited by hand and a command always agree.
+
+```bash
+agento mcp add files -- npx -y @modelcontextprotocol/server-filesystem ~/notes   # a local server
+agento mcp add notes --url https://notes.example/mcp --header X-Team=core        # a hosted one
+agento mcp list
+agento mcp remove files
+
+agento skill add ./my-skill                 # a folder with a SKILL.md, or a folder of them
+agento skill add https://github.com/acme/skills.git --path skills/pdf
+agento skill list
+agento skill remove pdf
+
+agento plugin add ./reports-plugin          # or a git URL
+agento plugin list
+agento plugin remove reports
+```
+
+| | Yours (default) | This folder (`--project`) |
+|---|---|---|
+| MCP servers | `~/.agento/mcp.json` | `.mcp.json`, the file Claude Code reads |
+| Skills | `~/.agento/skills/` | `.agents/skills/` |
+| Plugins | `~/.agento/plugins/` | load one in place with `--plugin <dir>` |
+
+`agento mcp` with no verb still runs agento *as* an MCP server (below).
+
+**Or just ask.** In the terminal the agent has the same installs as tools (`install_plugin`, `install_skill`, `add_mcp_server`, `list_extensions`), so "install the plugin at github.com/acme/reports" works. Each install is a change and waits for your approval, with the source in the question. A new skill is usable on the next turn; a new MCP server connects when agento next starts. These tools are not offered to an agent nobody is watching (`acp` unattended, `mcp`, `a2a`).
+
+**Plugins** follow [Agent Plugins 1.0.0](https://agent-plugins.org/), the open standard for packaging agent extensions: a folder with a `plugin.json`, a `skills/` folder and an `mcp.json`. Agento reads both component types, so a plugin written for another client that follows the standard loads here unchanged. Its skills join the agent's skills everywhere (terminal, `acp`, `mcp`, `a2a`); its MCP servers connect in the terminal, named `plugin:server`.
+
+- **Checked before it is trusted:** a bad manifest rejects the plugin, a bad `mcp.json` turns off its servers only, a bad server entry or skill is skipped alone, and each is reported (`agento plugin list`, and once when the terminal starts).
+- **Kept inside its folder:** nothing a plugin names may resolve outside it, symlinks included. Only `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` are expanded.
+- **Said at install:** `agento plugin add` prints the programs a plugin's stdio servers would run, because installing one means letting it run them the next time agento starts.
+- **For an app that takes plugins from its own users** (a hosted product): `loadPlugin(dir, { data })` from `@ghostmind-dev/agento/plugins` checks one, `snapshotSkills(pluginSkills(plugin))` turns its skills into plain data to store, and `inlineSkills(data)` gives them to a run that cannot read the disk they came from. `plugin.servers` lists its servers, for the app to pick the ones it is willing to reach.
+- **Not read:** hooks, commands and custom agents. They are not in version 1 of the standard. A remote server whose header contains `${…}` is skipped, since the standard forbids expanding it and the connector underneath would.
 
 ### As an MCP tool
 

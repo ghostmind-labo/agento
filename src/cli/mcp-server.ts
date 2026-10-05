@@ -61,6 +61,8 @@ export interface McpServeOptions {
   webLocal?: boolean;
   /** More folders of skills, looked in first. False: no skills at all. */
   skills?: string[] | false;
+  /** Folders of Agent Plugins to load besides the installed ones. */
+  plugins?: string[];
   cwd?: string;
 }
 
@@ -99,7 +101,7 @@ export async function serveMcp(o: McpServeOptions): Promise<void> {
       model,
       root: cwd,
       toolsets: unattended(standardToolsets({ root: cwd, web: o.web !== false, webOptions: { allowPrivate: !!o.webLocal } }), { autoApprove: o.autoApprove, allowShell: o.allowShell }),
-      skills: o.skills === false ? undefined : cliSkills(cwd, o.skills),
+      skills: o.skills === false ? undefined : cliSkills(cwd, o.skills, o.plugins),
       guidance: strategy ? strategy.guidance : (o.guidance ?? 'auto'),
       strategy: strategy ?? undefined,
       maxUsd: args.max_usd !== undefined ? Number(args.max_usd) : (o.maxUsd ?? 0.5),

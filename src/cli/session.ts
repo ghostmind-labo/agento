@@ -6,9 +6,11 @@
  * about working in a directory on the person's machine, and its tools are what the CLI was given.
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   defaultPrompts,
+  dirSkills,
   eventLog,
   fileProfiles,
   runAgent,
@@ -23,6 +25,14 @@ import {
 } from '../index.ts';
 
 export type Answer = 'yes' | 'no' | 'always';
+
+/**
+ * Where every way of running agento looks for skills, first match wins: the folders named with
+ * `--skills`, then `.claude/skills` and `.agents/skills` in the working folder, then the same two in
+ * the home. (`.claude/skills` is Claude Code's layout, `.agents/skills` the one Codex and opencode read.)
+ */
+export const cliSkills = (root: string, extra: string[] = []): SkillSource =>
+  dirSkills(...extra, join(root, '.claude', 'skills'), join(root, '.agents', 'skills'), join(homedir(), '.claude', 'skills'), join(homedir(), '.agents', 'skills'));
 
 export interface SessionOptions {
   provider: ModelProvider;

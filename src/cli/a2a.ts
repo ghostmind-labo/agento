@@ -19,13 +19,13 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 
 import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { dirSkills, type AgentEvent, type ChatMessage, type Guidance, type ModelProvider } from '../index.ts';
+import { type AgentEvent, type ChatMessage, type Guidance, type ModelProvider, type SkillSource } from '../index.ts';
 import { standardToolsets } from '../toolkit/index.ts';
-import { a2aHandler, type A2aExecutor, type A2aHandlerOptions, type A2aStore, type A2aTurn, type StoredTask } from './a2a-handler.ts';
+import { a2aHandler, RUN_TASK_SKILL, type A2aExecutor, type A2aHandlerOptions, type A2aStore, type A2aTurn, type StoredTask } from './a2a-handler.ts';
 import { home } from './config.ts';
 import { loadStrategy } from './gym/strategy.ts';
 import { STARTER } from './models.ts';
-import { createSession, type Session } from './session.ts';
+import { cliSkills, createSession, type Session } from './session.ts';
 import { unattended } from './unattended.ts';
 
 export * from './a2a-handler.ts';
@@ -176,6 +176,15 @@ export function fileHistory(dir: string): A2aHistory {
   };
 }
 
+/**
+ * The agent's skills as the Agent Card lists them, after the general one: A2A's "skills" are what a
+ * caller reads to decide whether this agent is the one to ask, which is what a skill's description is for.
+ */
+export async function cardSkills(source: SkillSource | undefined): Promise<Record<string, unknown>[]> {
+  const listed = source ? await source.list() : [];
+  return [RUN_TASK_SKILL, ...listed.map(s => ({ id: s.name, name: s.name, description: s.description, tags: ['skill'] }))];
+}
+
 // ---------- the executor that runs agento ----------
 
 export interface AgentoExecutorOptions {
@@ -190,6 +199,8 @@ export interface AgentoExecutorOptions {
   files?: boolean;
   web?: boolean;
   webLocal?: boolean;
+  /** More folders of skills, looked in first. False: no skills at all. */
+  skills?: string[] | false;
   cwd?: string;
   /** Conversations outlive the instance. Default: this instance's memory. */
   history?: A2aHistory;
@@ -221,7 +232,7 @@ export function agentoExecutor(o: AgentoExecutorOptions): A2aExecutor {
         model,
         root: cwd,
         toolsets: unattended(tools, { autoApprove: o.autoApprove, allowShell: o.allowShell }),
-        skills: dirSkills(join(cwd, '.claude', 'skills'), join(homedir(), '.claude', 'skills')),
+        skills: o.skills === false ? undefined : cliSkills(cwd, o.skills),
         guidance: strategy ? strategy.guidance : (o.guidance ?? 'auto'),
         strategy: strategy ?? undefined,
         maxUsd: o.maxUsd ?? 0.5,

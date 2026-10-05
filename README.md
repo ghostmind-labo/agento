@@ -177,7 +177,7 @@ agento models                           # the short list with live prices (--all
 - **Files:** read, list and search freely. Writing or editing a file asks first. It can't reach outside the folder it started in.
 - **Shell:** every command asks first.
 - **MCP servers:** from `.mcp.json` (Claude Code's format). This needs `@ghostmind-dev/ensemble` installed alongside, an *optional* peer dependency, so the package keeps zero runtime dependencies.
-- **Skills:** from `.claude/skills`. Jev picks which one a task needs.
+- **Skills:** every `<name>/SKILL.md` in `.claude/skills` or `.agents/skills`, in the folder or in your home, plus any folder named with `--skills <dir>` (repeatable, looked in first; this is how a container ships its own). Jev picks which one a task needs. It is the same in the terminal, `agento acp`, `agento mcp` and `agento a2a`, and `--no-skills` turns them off.
 
 Answers render as markdown in the terminal, including box-drawn tables fitted to the width. `agento train` trains the harness around a cheap model: fresh challenges each round, graded in code, and a change kept only if it clearly scores better. It rises through 5 difficulty levels, and agento uses what it learned. Output has three styles: `minimal`, `normal` and `verbose` (`--style`, or `/style` to save one). Only `verbose` shows Jev's scoring and per-turn costs. Each session is logged to `~/.agento/sessions/`. The engine names no model. agento, as an app, offers a short curated list of 16 models with tools and reasoning, each proven in an agent loop (the list Potion's Talk offers), in `src/cli/models.ts`. "Other model…" searches the whole catalogue. `agento model` saves your pick in `~/.agento/config.json`, `--model` overrides it for one run, and `AGENT_MODEL` forces one. `agento --help` lists the options. In this repo, `cli/scripts/agento.sh` runs it from source with the key from Vault (see [`cli/Readme.md`](cli/Readme.md)).
 
@@ -229,6 +229,7 @@ curl -s http://127.0.0.1:41241/ -H 'Content-Type: application/json' -H 'A2A-Vers
 - **Two bindings** on the same tasks: JSON-RPC at `POST /`, and HTTP+JSON as REST paths (`POST /message:send`, `GET /tasks/{id}`, …). Streaming is Server-Sent Events on both.
 - **The answer** is a text artifact on a `TASK_STATE_COMPLETED` task; the status, steps, tool calls and cost (USD) are in the task's `metadata.agento`. A run that hit a limit is `TASK_STATE_FAILED`, with the reason.
 - **One `contextId` is one conversation**: a second task in the same context sees the first.
+- **Its skills are in the card**: each skill the agent has is listed in the Agent Card's `skills`, after the general one, so a caller can tell what it is good at.
 - **Read-only by default**, like `agento mcp`: `--yes` and `--allow-shell <word>` work the same way.
 - **It listens on 127.0.0.1.** To expose it, pass `--host` (and `--public-url` behind a proxy or a tunnel) and set `A2A_TOKEN`: callers then send it as a Bearer token, and the card says so. It refuses to start on another address with `--yes` or `--allow-shell` and no token.
 - **Not offered** (and the card says so): push notifications, the extended card, gRPC. A caller that sends no `A2A-Version` header is speaking 0.3 by the spec, and is refused with the version to send.

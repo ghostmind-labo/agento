@@ -1,6 +1,6 @@
 {
   "name": "@ghostmind-dev/agento",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "agento: the agent engine (tool loop and guards, Jev as the guide, USD budgets, go/pause/stop hooks, an append-only event log) as a library, plus the `agento` command: a terminal agent that also runs in editors and chats over the Agent Client Protocol.",
   "type": "module",
   "license": "MIT",
@@ -16,6 +16,14 @@
     "./models": {
       "types": "./dist/cli/models.d.ts",
       "import": "./dist/cli/models.js"
+    },
+    "./a2a": {
+      "types": "./dist/cli/a2a.d.ts",
+      "import": "./dist/cli/a2a.js"
+    },
+    "./a2a-handler": {
+      "types": "./dist/cli/a2a-handler.d.ts",
+      "import": "./dist/cli/a2a-handler.js"
     }
   },
   "files": [

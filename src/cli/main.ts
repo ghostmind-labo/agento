@@ -56,6 +56,9 @@ const { values: flags, positionals } = parseArgs({
     port: { type: 'string' },
     host: { type: 'string' },
     'public-url': { type: 'string' },
+    store: { type: 'string' },
+    'no-files': { type: 'boolean' },
+    'no-streaming': { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
   allowPositionals: true,
@@ -75,6 +78,8 @@ const HELP = `agento — the agent core in a terminal
   agento a2a                 run as an A2A agent over HTTP, for agents that speak Agent2Agent 1.0
                              --port <n> (default 41241)  --host <addr> (default 127.0.0.1)  --public-url <url>
                              A2A_TOKEN in the environment makes callers send it as a Bearer token
+                             --store <dir> keeps tasks and conversations in a folder (several instances, or ones that do not last)
+                             --no-files (web tools only)  --no-streaming (for a host that buffers responses)
                              read-only unless --yes or --allow-shell <word>
   agento models              the models agento offers, with live prices
   agento train               train the harness around your model: fresh challenges, keep what
@@ -296,7 +301,8 @@ if (sub === 'mcp') {
 
 // `agento a2a`: the agent as an A2A server (Agent2Agent 1.0) over HTTP. It runs until it is stopped.
 if (sub === 'a2a') {
-  const { agentoExecutor, serveA2a, CARD_PATH } = await import('./a2a.ts');
+  const { agentoExecutor, fileHistory, fileStore, serveA2a, CARD_PATH } = await import('./a2a.ts');
+  const kept = flags.store ? resolve(flags.store) : undefined;
   const host = flags.host ?? '127.0.0.1';
   const token = process.env.A2A_TOKEN || undefined;
   const open = host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
@@ -309,8 +315,12 @@ if (sub === 'a2a') {
     host,
     publicUrl: flags['public-url'],
     token,
+    store: kept ? fileStore(kept) : undefined,
+    streaming: !flags['no-streaming'],
     log: s => void process.stderr.write(s),
     executor: agentoExecutor({
+      history: kept ? fileHistory(kept) : undefined,
+      files: !flags['no-files'],
       defaultModel: resolveModel(flags.model, process.env.AGENT_MODEL, readConfig()).model,
       providerFor: m => openrouter({ model: m, headers: { 'X-Title': 'agento' } }),
       guidance: parseGuidance(flags.guidance) ?? 'auto',

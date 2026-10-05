@@ -2,7 +2,7 @@
 // the agent what to do through the messageId of each message (its scenarios/*.feature files), and
 // should not spend a cent on a real model.
 //   npm run tck:a2a        (PORT picks the port; default 9999, the kit's own default)
-import { serveA2a, type A2aTurn } from '../../src/cli/a2a.ts';
+import { fileStore, serveA2a, type A2aTurn } from '../../src/cli/a2a.ts';
 
 const wait = (ms: number, signal: AbortSignal) =>
   new Promise<void>(done => {
@@ -35,6 +35,8 @@ SCENARIOS.sort((a, b) => b[0].length - a[0].length);
 
 const handle = await serveA2a({
   port: Number(process.env.PORT ?? 9999),
+  // A2A_STORE=<dir> runs the kit on the stored path, as a serverless deployment would be.
+  store: process.env.A2A_STORE ? fileStore(process.env.A2A_STORE) : undefined,
   log: s => void process.stderr.write(s),
   card: { inputModes: ['text/plain', 'application/json'], outputModes: ['text/plain', 'application/json'] },
   executor: async turn => {

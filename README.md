@@ -160,6 +160,23 @@ runAgent({ provider, task, toolsets: standardToolsets({ root: '/path/to/project'
 - **Web fetch** follows redirects by hand and checks every hop. It refuses `localhost`, private networks, cloud-metadata addresses, any single-label name (`http://api/`, `http://db:5432`, which can only be an internal service) and any name that *resolves* to a private address, unless you pass `webOptions: { allowPrivate: true }`. One gap remains: a name that changes its DNS answer between the check and the connection is not caught, so when this runs for people you do not trust, also deny the private ranges at the firewall (a Kubernetes egress policy, for one). A page can still say anything, so the engine's rules treat all tool output as data, and the agent is told to name the URLs its answer rests on.
 - **The model list** agento offers is a public subpath: `import { CURATED, labelOf, offered, STARTER } from '@ghostmind-dev/agento/models'`. The engine itself still names no model.
 
+### A hosted shell: code that runs at OpenRouter, not on your server
+
+An app that runs for people it does not know cannot give the model a shell on its own machine. OpenRouter can run one instead: its **hosted shell** is a *server tool*, a tool OpenRouter runs while the model is answering. The model writes commands, they run in a sandbox OpenRouter makes (no network unless you allow hosts), and the output goes back to the model inside the same call. Nothing runs where the engine runs.
+
+```ts
+import { hostedShell, openrouter, runAgent } from '@ghostmind-dev/agento';
+
+const provider = openrouter({ model, serverTools: [hostedShell()] });
+await runAgent({ provider, task, toolsets });   // the loop's own tools work beside it
+```
+
+- **Who pays:** the key's account, $0.0001 per second of sandbox time with a 30-second minimum for a new sandbox (about $0.003 a run). It is part of the call's `usage.cost`, so it counts toward `budget.maxUsd` like every other cent.
+- **What you see:** each shell call arrives as a `tool_call` and a `tool_result` event named `openrouter:shell` (the commands, then what they printed, an exit code or a timeout), and counts in `toolCalls`. The loop does not gate or approve it: it never runs on your side.
+- **How it is sent:** server tools exist only on OpenRouter's Responses API, so naming one makes the provider call `/responses` instead of `/chat/completions` (`api: 'responses'` does the same with no server tool). The request, the reply, streaming, function tools, retries and costs are the same to the loop.
+- **Between steps:** OpenRouter keeps nothing between calls, so what a command printed in one step is sent back with the next. Each call gets a fresh sandbox unless you pass OpenRouter's own parameters: `hostedShell({ environment: { type: 'container_reference', container_id } })`.
+- **Any server tool:** `serverTools: [{ type, parameters }]` is passed as it is. The hosted shell is in beta at OpenRouter; its shapes here are the ones a live call returned in October 2026.
+
 ## The `agento` command
 
 The package ships a terminal chat on the core, in the spirit of opencode. Use it to try the engine, or as a small agent in any folder:
@@ -175,7 +192,7 @@ agento models                           # the short list with live prices (--all
 
 **What the agent can do:**
 - **Files:** read, list and search freely. Writing or editing a file asks first. It can't reach outside the folder it started in.
-- **Shell:** every command asks first.
+- **Shell:** every command asks first. It is your machine's shell. `--shell openrouter` (or `/shell openrouter` in the chat, which saves it) runs commands in OpenRouter's hosted sandbox instead, billed to your key: nothing then runs on your machine, and the sandbox has no network and none of the folder's files, so it is for computing and trying code, not for working on the folder. It is never on unless you choose it.
 - **MCP servers:** from `.mcp.json` (Claude Code's format). This needs `@ghostmind-dev/ensemble` installed alongside, an *optional* peer dependency, so the package keeps zero runtime dependencies.
 - **Skills:** every `<name>/SKILL.md` in `.claude/skills` or `.agents/skills`, in the folder or in your home, the ones you installed with `agento skill add`, the ones plugins bring, plus any folder named with `--skills <dir>` (repeatable, looked in first; this is how a container ships its own). Jev picks which one a task needs. It is the same in the terminal, `agento acp`, `agento mcp` and `agento a2a`, and `--no-skills` turns them off.
 

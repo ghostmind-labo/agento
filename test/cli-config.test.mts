@@ -10,7 +10,7 @@ import type { ModelCard } from '../src/index.ts';
 let n = 0;
 const ok = (what: string) => console.log(`ok · ${++n} ${what}`);
 process.env.AGENTO_HOME = mkdtempSync(join(tmpdir(), 'agento-home-'));
-const { home, pickable, readConfig, resolveModel, writeConfig } = await import('../src/cli/config.ts');
+const { cliProvider, home, isShell, pickable, readConfig, resolveModel, resolveShell, writeConfig } = await import('../src/cli/config.ts');
 const { CURATED, capable, labelOf, offered } = await import('../src/cli/models.ts');
 const { filterItems, windowStart } = await import('../src/cli/picker.ts');
 
@@ -101,6 +101,39 @@ const CATALOG = [card('z-ai/glm-5.3', 4.4), card('z-ai/glm-5.3-flash', 0.5), car
   assert.equal(stray.status, 2);
   assert.match(stray.stderr, /unknown command "modle"/);
   ok('agento model <id>; no picker without a terminal; unknown commands refused');
+}
+
+// where commands run: this machine unless the person chose OpenRouter's hosted shell (a flag, or the saved setting)
+{
+  assert.equal(resolveShell(undefined, {}), 'local', 'a local agento has a shell already: the hosted one is never on by itself');
+  assert.equal(resolveShell(undefined, { shell: 'openrouter' }), 'openrouter');
+  assert.equal(resolveShell('local', { shell: 'openrouter' }), 'local', 'the flag wins');
+  assert.equal(resolveShell('nonsense', { shell: 'nonsense' }), 'local');
+  assert.ok(isShell('openrouter') && !isShell('remote'));
+  const before = readConfig().model;
+  writeConfig({ shell: 'openrouter' });
+  assert.equal(readConfig().shell, 'openrouter');
+  assert.equal(readConfig().model, before, 'the other settings are kept');
+
+  // what each choice sends: chat completions and nothing else, or the Responses API with the hosted shell
+  const sent: { url: string; body: any }[] = [];
+  const realFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'k';
+  globalThis.fetch = (async (url: string, init: any) => {
+    sent.push({ url: String(url), body: JSON.parse(init.body) });
+    return new Response(JSON.stringify(String(url).endsWith('/responses') ? { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'hi' }] }] } : { choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }] }), { headers: { 'Content-Type': 'application/json' } });
+  }) as unknown as typeof globalThis.fetch;
+  try {
+    await cliProvider('vendor/m').chat({ messages: [{ role: 'user', content: 'hi' }] });
+    await cliProvider('vendor/m', 'openrouter').chat({ messages: [{ role: 'user', content: 'hi' }] });
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.OPENROUTER_API_KEY;
+  }
+  assert.ok(sent[0]!.url.endsWith('/chat/completions') && !sent[0]!.body.tools);
+  assert.ok(sent[1]!.url.endsWith('/responses'));
+  assert.deepEqual(sent[1]!.body.tools, [{ type: 'openrouter:shell', parameters: { engine: 'openrouter' } }]);
+  ok('shell setting: local by default; openrouter sends the hosted shell on the Responses API');
 }
 
 console.log(`${n} cases`);

@@ -60,6 +60,8 @@ export interface SessionOptions {
   autoApprove?: boolean;
   /** The conversation so far, when it was kept somewhere between runs. */
   history?: ChatMessage[];
+  /** Lines added to the system prompt after the CLI's own (e.g. where commands run when it is not this machine). */
+  notes?: string[];
   /** What training learned for this model: its rules, guidance and read nudge are applied. */
   strategy?: { rules: string[]; maxSteps: number; maxToolCalls: number; readNudgeAt: number };
 }
@@ -118,7 +120,7 @@ export function createSession(o: SessionOptions) {
       },
       toolsets: o.toolsets,
       skills: o.skills,
-      prompts: { system: [...defaultPrompts.system, ...cliSystem(o.root), ...(o.strategy?.rules ?? [])] },
+      prompts: { system: [...defaultPrompts.system, ...cliSystem(o.root), ...(o.notes ?? []), ...(o.strategy?.rules ?? [])] },
       history,
       guidance,
       guide: profiles ? { profiles } : undefined,

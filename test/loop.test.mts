@@ -286,4 +286,25 @@ const counter = () => {
   ok('model option');
 }
 
+// 24 · a server tool (one the provider ran inside the model call) is logged, shown and counted like the loop's own
+{
+  const { set } = counter();
+  const events: { type: string; [key: string]: unknown }[] = [];
+  const provider = scriptedModel([
+    request => {
+      request.onServerTool?.({ id: 's1', name: 'vendor:shell', args: { commands: ['echo 3'] }, ok: true, result: '3' });
+      return { message: { role: 'assistant', content: 'There are 3 apples.' }, finishReason: 'stop', model: 'stub/worker', cost: 0.003 };
+    },
+  ]);
+  const r = await runAgent({ provider, task, toolsets: [set], onEvent: e => events.push(e) });
+  assert.equal(r.status, 'done');
+  assert.equal(r.toolCalls, 1);
+  assert.equal(r.cost, 0.003);
+  assert.deepEqual(
+    events.filter(e => e.type === 'tool_call' || e.type === 'tool_result'),
+    [{ type: 'tool_call', id: 's1', name: 'vendor:shell', args: { commands: ['echo 3'] } }, { type: 'tool_result', id: 's1', name: 'vendor:shell', ok: true, result: '3' }]
+  );
+  ok('server tools: a tool_call and a tool_result event each, counted in toolCalls');
+}
+
 console.log(`${n} cases`);

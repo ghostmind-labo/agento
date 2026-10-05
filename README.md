@@ -213,6 +213,34 @@ agents: { helper: { protocol: "mcp", server: "agento", tool: "run_task" } },
 
 Nobody is there to approve anything, so it is **read-only by default**: `write_file`, `edit_file` and `run_command` are not even offered. `--yes` offers everything and asks nothing; `--allow-shell <word>` offers `run_command` for simple commands starting with that word, and any other command comes back as an ordinary tool error (the task goes on). An unfinished task (a limit hit) is returned as an error, so a graph step fails instead of passing half an answer.
 
+### As an A2A agent
+
+`agento a2a` serves the agent over the **Agent2Agent protocol** (A2A, version 1.0), so another agent or an agent platform can discover it and hand it a task over HTTP. Where an MCP call is one question and one answer, an A2A task has a life: the caller can poll it, stream it, cancel it, and answer when the agent asks back.
+
+```bash
+agento a2a --port 41241          # http://127.0.0.1:41241, card at /.well-known/agent-card.json
+
+curl -s http://127.0.0.1:41241/ -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -d '{
+  "jsonrpc": "2.0", "id": 1, "method": "SendMessage",
+  "params": { "message": { "role": "ROLE_USER", "messageId": "m1", "parts": [{ "text": "What is in this folder?" }] } }
+}'
+```
+
+- **Two bindings** on the same tasks: JSON-RPC at `POST /`, and HTTP+JSON as REST paths (`POST /message:send`, `GET /tasks/{id}`, …). Streaming is Server-Sent Events on both.
+- **The answer** is a text artifact on a `TASK_STATE_COMPLETED` task; the status, steps, tool calls and cost (USD) are in the task's `metadata.agento`. A run that hit a limit is `TASK_STATE_FAILED`, with the reason.
+- **One `contextId` is one conversation**: a second task in the same context sees the first.
+- **Read-only by default**, like `agento mcp`: `--yes` and `--allow-shell <word>` work the same way.
+- **It listens on 127.0.0.1.** To expose it, pass `--host` (and `--public-url` behind a proxy or a tunnel) and set `A2A_TOKEN`: callers then send it as a Bearer token, and the card says so. It refuses to start on another address with `--yes` or `--allow-shell` and no token.
+- **Not offered** (and the card says so): push notifications, the extended card, gRPC. A caller that sends no `A2A-Version` header is speaking 0.3 by the spec, and is refused with the version to send.
+
+**Compliance** is checked with the protocol's own kit, [a2a-tck](https://github.com/a2aproject/a2a-tck), on a scripted agent (no key, no spend):
+
+```bash
+npm run tck:a2a   # needs uv and network the first time; about a minute
+```
+
+Last run: 72 of the kit's MUST requirements pass on both bindings, every SHOULD and MAY it tests passes, and one fails: CORE-SEND-003, where the kit expects a success for a media type the agent does not take and the specification requires `ContentTypeNotSupportedError`. The rest are skipped (features agento does not advertise) or have no test in the kit (TLS, signing).
+
 ### Launched by a host that supplies the key
 
 The one credential is `OPENROUTER_API_KEY`, from the environment, and `OPENROUTER_BASE_URL` is honoured (a proxy that meters a run works). Every model call goes through that one endpoint: the worker, and the Jev decisions through `/systemone`. Nothing needs a login, a saved default or a writable home: with the key set, `agento acp` and `agento mcp` just start (no `authenticate` step is advertised), the model comes from `--model`, `AGENT_MODEL` or a cheap starter, and the session log is best-effort. Without the key they say so at once, naming it. The web tools reach Exa's endpoint directly (no key); `--no-web` leaves them out for a sandbox without outbound access.

@@ -40,6 +40,8 @@ export interface SessionOptions {
   /** Per-model guide profiles, so the guide learns across sessions. */
   profilesPath?: string;
   autoApprove?: boolean;
+  /** The conversation so far, when it was kept somewhere between runs. */
+  history?: ChatMessage[];
   /** What training learned for this model: its rules, guidance and read nudge are applied. */
   strategy?: { rules: string[]; maxSteps: number; maxToolCalls: number; readNudgeAt: number };
 }
@@ -55,7 +57,7 @@ export const cliSystem = (root: string): string[] => [
 ];
 
 export function createSession(o: SessionOptions) {
-  let history: ChatMessage[] = [];
+  let history: ChatMessage[] = o.history ?? [];
   let total = 0;
   let model = o.model;
   let guidance = o.guidance;
@@ -157,6 +159,13 @@ export function createSession(o: SessionOptions) {
     },
     get logPath() {
       return o.logPath;
+    },
+    /** The conversation, without the system message: what to keep to carry it on elsewhere. */
+    get history() {
+      return history;
+    },
+    set history(messages: ChatMessage[]) {
+      history = messages;
     },
     events: () => log.entries(),
     clear() {

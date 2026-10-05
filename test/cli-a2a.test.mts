@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 process.env.HOME = mkdtempSync(join(tmpdir(), 'agento-a2a-userhome-'));
 process.env.AGENTO_HOME = mkdtempSync(join(tmpdir(), 'agento-a2a-home-'));
 const { scriptedModel } = await import('../src/index.ts');
-const { agentoExecutor, serveA2a, CARD_PATH } = await import('../src/cli/a2a.ts');
+const { a2aHandler, agentoExecutor, fileHistory, fileStore, serveA2a, CARD_PATH } = await import('../src/cli/a2a.ts');
 type Executor = Parameters<typeof serveA2a>[0]['executor'];
 
 let n = 0;
@@ -295,6 +295,89 @@ const reason = (r: Msg) => r.error.data.find((d: Msg) => d['@type'].endsWith('Er
   assert.equal(open.code, 1);
   assert.match(open.out, /A2A_TOKEN/);
   ok('agento a2a as a process: keyless failure is said in the task; no open port with --yes and no token');
+}
+
+// ---------- serverless: no port, no instance that lasts ----------
+type Handler = ReturnType<typeof a2aHandler>;
+const ask = async (h: Handler, method: string, params: Msg = {}) => (await (await h.fetch(new Request('http://instance/', { method: 'POST', headers: V, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }))).json()) as Msg;
+const watch = async (h: Handler, method: string, params: Msg) => (await (await h.fetch(new Request('http://instance/', { method: 'POST', headers: V, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }))).text()).split('\n').filter(l => l.startsWith('data: ')).map(l => (JSON.parse(l.slice(6)) as Msg).result as Msg);
+
+// 11 · the handler alone: a Request in, a Response out, nothing from Node
+{
+  assert.ok(!/^import /m.test(readFileSync(join(here, '..', 'src', 'cli', 'a2a-handler.ts'), 'utf8')), 'the protocol imports nothing, so it runs where Node is not');
+  const h = a2aHandler({ executor: async t => t.status('TASK_STATE_COMPLETED', 'ok'), streaming: false });
+  const card = (await (await h.fetch(new Request(`http://10.0.0.7:8080${CARD_PATH}`, { headers: { 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'agent.example.com' } }))).json()) as Msg;
+  assert.deepEqual(card.supportedInterfaces.map((i: Msg) => i.url), ['https://agent.example.com/', 'https://agent.example.com'], 'behind a proxy that ends TLS, the card gives the public address');
+  assert.equal(card.capabilities.streaming, false);
+  const kept: Promise<unknown>[] = [];
+  const sent = await h.fetch(new Request('http://instance/message:send', { method: 'POST', headers: V, body: JSON.stringify({ message: user('x') }) }), { waitUntil: p => void kept.push(p) });
+  assert.deepEqual([sent.status, ((await sent.json()) as Msg).task.status.state, kept.length], [200, 'TASK_STATE_COMPLETED', 1], 'the turn is handed to waitUntil, for a host that freezes after the response');
+  await kept[0];
+  const noStream = await h.fetch(new Request('http://instance/message:stream', { method: 'POST', headers: V, body: JSON.stringify({ message: user('x') }) }));
+  assert.deepEqual([noStream.status, ((await noStream.json()) as Msg).error.details[0].reason], [400, 'UNSUPPORTED_OPERATION'], 'streaming off: the card says so, and the calls are refused');
+  assert.equal((await ask(h, 'SubscribeToTask', { id: 'x' })).error.code, -32004);
+  h.close();
+  ok('a2aHandler: fetch only, forwarded address, waitUntil, streaming off');
+}
+
+// 12 · two instances, one store: a task sent to one is read, continued, watched and cancelled on the other
+{
+  const dir = folder();
+  let release!: () => void;
+  let aborted = false;
+  const executor: Executor = async t => {
+    if (t.text === 'ask' && t.first) return t.status('TASK_STATE_INPUT_REQUIRED', 'Which folder?');
+    if (t.text === 'slow') {
+      t.status('TASK_STATE_WORKING');
+      await new Promise<void>(r => { release = r; t.signal.addEventListener('abort', () => { aborted = true; r(); }); });
+      t.artifact('late answer');
+      return t.status('TASK_STATE_COMPLETED');
+    }
+    t.artifact(`did ${t.text}`);
+    t.status('TASK_STATE_COMPLETED');
+  };
+  const A = a2aHandler({ executor, store: fileStore(dir), pollMs: 15 });
+  const B = a2aHandler({ executor, store: fileStore(dir), pollMs: 15 });
+
+  const asked = (await ask(A, 'SendMessage', { message: user('ask') })).result.task;
+  assert.equal((await ask(B, 'GetTask', { id: asked.id })).result.status.state, 'TASK_STATE_INPUT_REQUIRED', 'the other instance knows the task');
+  const done = (await ask(B, 'SendMessage', { message: user('src', { taskId: asked.id }) })).result.task;
+  assert.deepEqual([done.id, done.status.state, done.artifacts[0].parts[0].text, done.history.length], [asked.id, 'TASK_STATE_COMPLETED', 'did src', 3], 'and can carry it on, history included');
+  assert.equal((await ask(A, 'GetTask', { id: asked.id })).result.status.state, 'TASK_STATE_COMPLETED', 'the first instance reads what the second did');
+  assert.equal((await ask(B, 'ListTasks')).result.totalSize, 1);
+
+  const slow = (await ask(A, 'SendMessage', { message: user('slow'), configuration: { returnImmediately: true } })).result.task;
+  assert.equal((await ask(B, 'SendMessage', { message: user('x', { taskId: slow.id }) })).error.code, -32004, 'a task another instance is working on takes no second turn');
+  const watching = watch(B, 'SubscribeToTask', { id: slow.id });
+  await new Promise(r => setTimeout(r, 60));
+  release();
+  const seen = await watching;
+  assert.deepEqual([Object.keys(seen[0]!)[0], seen.some(e => e.artifactUpdate?.artifact.parts[0].text === 'late answer'), seen.at(-1)!.statusUpdate.status.state], ['task', true, 'TASK_STATE_COMPLETED'], 'a watcher on another instance sees the task finish');
+
+  const doomed = (await ask(A, 'SendMessage', { message: user('slow'), configuration: { returnImmediately: true } })).result.task;
+  assert.equal((await ask(B, 'CancelTask', { id: doomed.id })).result.status.state, 'TASK_STATE_CANCELED');
+  release(); // the instance running it goes on, until its next write finds the cancellation
+  await new Promise(r => setTimeout(r, 80));
+  const after = (await ask(A, 'GetTask', { id: doomed.id })).result;
+  assert.deepEqual([aborted, after.status.state, after.artifacts], [true, 'TASK_STATE_CANCELED', undefined], 'a cancellation from elsewhere stands, and stops the turn');
+  A.close();
+  B.close();
+  ok('two instances on one store: read, continue, watch, cancel');
+}
+
+// 13 · the conversation outlives the instance too; and an agent with the web only
+{
+  const dir = folder();
+  const one = scriptedModel(['First answer.'], { decide: false });
+  const two = scriptedModel(['Second answer.'], { decide: false });
+  const instance = (provider: typeof one) => a2aHandler({ store: fileStore(dir), executor: agentoExecutor({ providerFor: () => provider, defaultModel: 'stub/worker', hasKey: () => true, files: false, history: fileHistory(dir) }) });
+  const first = (await ask(instance(one), 'SendMessage', { message: user('remember 42') })).result.task;
+  const second = (await ask(instance(two), 'SendMessage', { message: user('what number?', { contextId: first.contextId }) })).result.task;
+  assert.equal(second.artifacts[0].parts[0].text, 'Second answer.');
+  assert.ok(two.requests[0]!.messages.some(m => m.content === 'First answer.'), 'a fresh instance picks the conversation up where it was kept');
+  const offered = (two.requests[0]?.tools ?? []).map(t => t.name);
+  assert.ok(offered.includes('web_fetch') && !offered.includes('read_file') && !offered.includes('list_dir'), 'files: false leaves the web tools only');
+  ok('fileHistory across instances; files: false');
 }
 
 console.log(`${n} cases`);

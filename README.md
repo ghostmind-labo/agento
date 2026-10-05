@@ -233,6 +233,28 @@ curl -s http://127.0.0.1:41241/ -H 'Content-Type: application/json' -H 'A2A-Vers
 - **It listens on 127.0.0.1.** To expose it, pass `--host` (and `--public-url` behind a proxy or a tunnel) and set `A2A_TOKEN`: callers then send it as a Bearer token, and the card says so. It refuses to start on another address with `--yes` or `--allow-shell` and no token.
 - **Not offered** (and the card says so): push notifications, the extended card, gRPC. A caller that sends no `A2A-Version` header is speaking 0.3 by the spec, and is refused with the version to send.
 
+#### On serverless
+
+Nothing in the protocol needs a port or an instance that lasts. `a2aHandler` (from `@ghostmind-dev/agento/a2a-handler`, which imports nothing from Node) is one function, a web `Request` in and a `Response` out, so it drops into any host with a fetch-style handler; `serveA2a` (from `@ghostmind-dev/agento/a2a`) is the same thing on a `node:http` port for a container.
+
+```ts
+import { a2aHandler } from "@ghostmind-dev/agento/a2a-handler";
+
+const a2a = a2aHandler({ executor, store, token: env.A2A_TOKEN });
+export default { fetch: (request, env, ctx) => a2a.fetch(request, ctx) };
+```
+
+| What serverless breaks | What handles it |
+|---|---|
+| The next request reaches another instance, or this one is gone | `store`: three calls (`get`, `put`, `list`) on any table, key-value store or folder. A task sent to one instance can be read, continued, watched and cancelled on another. `fileStore(dir)` is the folder version |
+| The conversation lived in memory | `agentoExecutor({ history })`, with `fileHistory(dir)` as the folder version |
+| The instance is frozen once the response is sent | the turn is handed to the host's `waitUntil` |
+| Responses are buffered, so Server-Sent Events do not arrive | `streaming: false` takes streaming off the card |
+| TLS ends at a proxy, so the request looks like plain `http` | the card follows `X-Forwarded-Proto` and `X-Forwarded-Host`, or `publicUrl` |
+| No folder worth reading | `agentoExecutor({ files: false })`: the web tools only |
+
+From the command line, for a container that scales to zero (Cloud Run and the like): `agento a2a --host 0.0.0.0 --store /mnt/a2a --no-files`, with `PORT` and `A2A_TOKEN` from the environment. Two limits to know: a task whose instance dies mid-turn stays "working" in the store, and a cancellation from another instance takes effect at the running turn's next write, not at once.
+
 **Compliance** is checked with the protocol's own kit, [a2a-tck](https://github.com/a2aproject/a2a-tck), on a scripted agent (no key, no spend):
 
 ```bash

@@ -53,6 +53,9 @@ const { values: flags, positionals } = parseArgs({
     seed: { type: 'string' },
     report: { type: 'boolean' },
     'allow-shell': { type: 'string', multiple: true },
+    port: { type: 'string' },
+    host: { type: 'string' },
+    'public-url': { type: 'string' },
     help: { type: 'boolean', short: 'h' },
   },
   allowPositionals: true,
@@ -68,6 +71,10 @@ const HELP = `agento — the agent core in a terminal
   agento acp                 run as an ACP agent for editors and chats (Zed, JetBrains, Buzz…)
                              unattended: --yes (approve all) or --allow-shell <word> (simple commands only)
   agento mcp                 run as an MCP server with one tool, run_task (for ensemble, Claude Code, opencode…)
+                             read-only unless --yes or --allow-shell <word>
+  agento a2a                 run as an A2A agent over HTTP, for agents that speak Agent2Agent 1.0
+                             --port <n> (default 41241)  --host <addr> (default 127.0.0.1)  --public-url <url>
+                             A2A_TOKEN in the environment makes callers send it as a Bearer token
                              read-only unless --yes or --allow-shell <word>
   agento models              the models agento offers, with live prices
   agento train               train the harness around your model: fresh challenges, keep what
@@ -127,7 +134,7 @@ if (sub === 'models' || flags.models) {
   await listModels(sub === 'models' ? subArg : sub, !!flags.all, s => process.stdout.write(s));
   process.exit(0);
 }
-if (sub && sub !== 'model' && sub !== 'train' && sub !== 'acp' && sub !== 'mcp') {
+if (sub && sub !== 'model' && sub !== 'train' && sub !== 'acp' && sub !== 'mcp' && sub !== 'a2a') {
   console.error(`unknown command "${sub}" — agento --help`);
   process.exit(2);
 }
@@ -284,6 +291,44 @@ if (sub === 'mcp') {
     webLocal: !!flags['web-local'],
     cwd: resolve(flags.cwd ?? process.cwd()),
   });
+  process.exit(0);
+}
+
+// `agento a2a`: the agent as an A2A server (Agent2Agent 1.0) over HTTP. It runs until it is stopped.
+if (sub === 'a2a') {
+  const { agentoExecutor, serveA2a, CARD_PATH } = await import('./a2a.ts');
+  const host = flags.host ?? '127.0.0.1';
+  const token = process.env.A2A_TOKEN || undefined;
+  const open = host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
+  if (open && !token && (flags.yes || flags['allow-shell']?.length)) {
+    out(c.red('Refusing to start: this would let anyone who can reach the port change files or run commands. Set A2A_TOKEN, or keep --host on 127.0.0.1.\n'));
+    process.exit(1);
+  }
+  const handle = await serveA2a({
+    port: Number(flags.port ?? process.env.PORT ?? 41241),
+    host,
+    publicUrl: flags['public-url'],
+    token,
+    log: s => void process.stderr.write(s),
+    executor: agentoExecutor({
+      defaultModel: resolveModel(flags.model, process.env.AGENT_MODEL, readConfig()).model,
+      providerFor: m => openrouter({ model: m, headers: { 'X-Title': 'agento' } }),
+      guidance: parseGuidance(flags.guidance) ?? 'auto',
+      maxUsd: Number(flags['max-usd'] ?? process.env.AGENT_MAX_USD ?? 0.5),
+      hasKey: () => !!process.env.OPENROUTER_API_KEY,
+      autoApprove: !!flags.yes,
+      allowShell: flags['allow-shell'],
+      web: !flags['no-web'],
+      webLocal: !!flags['web-local'],
+      cwd: resolve(flags.cwd ?? process.cwd()),
+    }),
+  });
+  process.stderr.write(`agento a2a on ${handle.url}  (card: ${handle.url}${CARD_PATH})${token ? '  token required' : open ? '  NO TOKEN: anyone who can reach this port can run tasks' : ''}\n`);
+  await new Promise<void>(stop => {
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
+  await handle.close();
   process.exit(0);
 }
 

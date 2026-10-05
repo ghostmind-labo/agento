@@ -1,6 +1,6 @@
 {
   "name": "@ghostmind-dev/agento",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "agento: the agent engine (tool loop and guards, Jev as the guide, USD budgets, go/pause/stop hooks, an append-only event log) as a library, plus the `agento` command: a terminal agent that also runs in editors and chats over the Agent Client Protocol.",
   "type": "module",
   "license": "MIT",
@@ -46,7 +46,8 @@
     "example": "node examples/two-tools.mts",
     "bench": "node bench/guidance.mts",
     "prepublishOnly": "npm run typecheck && npm test",
-    "tck": "bash scripts/acp-tck.sh"
+    "tck": "bash scripts/acp-tck.sh",
+    "tck:a2a": "bash scripts/a2a-tck.sh"
   },
   "devDependencies": {
     "@ghostmind-dev/ensemble": "^0.31.0",

@@ -201,6 +201,8 @@ export interface AgentoExecutorOptions {
   webLocal?: boolean;
   /** More folders of skills, looked in first. False: no skills at all. */
   skills?: string[] | false;
+  /** Folders of Agent Plugins to load besides the installed ones. */
+  plugins?: string[];
   cwd?: string;
   /** Conversations outlive the instance. Default: this instance's memory. */
   history?: A2aHistory;
@@ -232,7 +234,7 @@ export function agentoExecutor(o: AgentoExecutorOptions): A2aExecutor {
         model,
         root: cwd,
         toolsets: unattended(tools, { autoApprove: o.autoApprove, allowShell: o.allowShell }),
-        skills: o.skills === false ? undefined : cliSkills(cwd, o.skills),
+        skills: o.skills === false ? undefined : cliSkills(cwd, o.skills, o.plugins),
         guidance: strategy ? strategy.guidance : (o.guidance ?? 'auto'),
         strategy: strategy ?? undefined,
         maxUsd: o.maxUsd ?? 0.5,

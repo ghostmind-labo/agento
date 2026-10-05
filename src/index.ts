@@ -47,7 +47,7 @@ export type { AgentEvent, EventLog, LoggedEvent, EventLogOptions } from './event
 export { defaultPrompts, memorySessions } from './seams.ts';
 export type { AgentTask, AgentResult, AgentStatus, PromptPack, MemoryStore, SessionStore, Approve, PostProcessor, PostContext, SkillSource, SkillMeta } from './seams.ts';
 
-export { inlineSkills, dirSkills, pickSkills, skillsToolset, readFrontmatter, SKILL_TOOLS, NO_SKILL } from './skills.ts';
+export { inlineSkills, dirSkills, mergeSkills, snapshotSkills, pickSkills, skillsToolset, readFrontmatter, SKILL_TOOLS, NO_SKILL } from './skills.ts';
 export type { InlineSkill } from './skills.ts';
 
 export { askJevTool, askModelTool } from './consult.ts';

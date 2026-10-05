@@ -57,6 +57,48 @@ export function inlineSkills(skills: InlineSkill[]): SkillSource {
   };
 }
 
+/** Several skill sources as one: the first that has a name answers for it. */
+export function mergeSkills(...sources: SkillSource[]): SkillSource {
+  const owner = async (name: string) => {
+    for (const s of sources) if ((await s.list()).some(m => m.name === name)) return s;
+    return null;
+  };
+  return {
+    list: async () => {
+      const seen = new Map<string, SkillMeta>();
+      for (const s of sources) for (const m of await s.list()) if (!seen.has(m.name)) seen.set(m.name, m);
+      return [...seen.values()];
+    },
+    open: async name => (await owner(name))?.open(name) ?? null,
+    readFile: async (name, path) => (await owner(name))?.readFile(name, path) ?? null,
+  };
+}
+
+/**
+ * Any skill source as plain data, ready for `inlineSkills`: what an app stores when the skills must
+ * travel (into a database, into a sandboxed process that cannot read the disk they came from).
+ * A file over `maxFileBytes` is left out, and a skill over `maxSkillBytes` stops taking files.
+ */
+export async function snapshotSkills(source: SkillSource, limits: { maxFileBytes?: number; maxSkillBytes?: number } = {}): Promise<InlineSkill[]> {
+  const maxFile = limits.maxFileBytes ?? 200_000;
+  const maxSkill = limits.maxSkillBytes ?? 1_000_000;
+  const out: InlineSkill[] = [];
+  for (const meta of await source.list()) {
+    const opened = await source.open(meta.name);
+    if (!opened) continue;
+    const files: Record<string, string> = { 'SKILL.md': opened.instructions };
+    let size = opened.instructions.length;
+    for (const path of opened.files) {
+      const content = await source.readFile(meta.name, path);
+      if (content === null || content.length > maxFile || size + content.length > maxSkill) continue;
+      files[path] = content;
+      size += content.length;
+    }
+    out.push({ name: meta.name, description: meta.description, files });
+  }
+  return out;
+}
+
 function walk(dir: string, root: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     if (entry.startsWith('.')) continue;

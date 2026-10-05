@@ -25,7 +25,8 @@ import { home, pickable, price, readConfig, resolveModel, writeConfig } from './
 import { capable, labelOf, offered } from './models.ts';
 import { pick, type Item } from './picker.ts';
 import { loadStrategy } from './gym/strategy.ts';
-import { connectAll, type McpConnection } from './mcp.ts';
+import { connectSpecs, mcpConfig, type McpConnection } from './mcp.ts';
+import { plugins, pluginServers } from './plugins.ts';
 import { cliSkills, createSession, type Answer } from './session.ts';
 import { standardToolsets } from '../toolkit/index.ts';
 import { c, isStyle, printer, STYLES, summary, type Style } from './ui.ts';
@@ -43,6 +44,12 @@ const { values: flags, positionals } = parseArgs({
     'no-mcp': { type: 'boolean' },
     'no-skills': { type: 'boolean' },
     skills: { type: 'string', multiple: true },
+    plugin: { type: 'string', multiple: true },
+    project: { type: 'boolean' },
+    url: { type: 'string' },
+    header: { type: 'string', multiple: true },
+    env: { type: 'string', multiple: true },
+    path: { type: 'string' },
     'no-shell': { type: 'boolean' },
     'no-web': { type: 'boolean' },
     'web-local': { type: 'boolean' },
@@ -76,6 +83,12 @@ const HELP = `agento — the agent core in a terminal
                              unattended: --yes (approve all) or --allow-shell <word> (simple commands only)
   agento mcp                 run as an MCP server with one tool, run_task (for ensemble, Claude Code, opencode…)
                              read-only unless --yes or --allow-shell <word>
+  agento mcp list | add <name> -- <command> [args…] | add <name> --url <url> | remove <name>
+                             MCP servers the agent can use (--project: this folder's .mcp.json, else yours)
+  agento skill list | add <folder or git URL> | remove <name>
+                             skills (--project: ./.agents/skills, else ~/.agento/skills; --path <folder inside the source>)
+  agento plugin list | add <folder or git URL> | remove <name>
+                             Agent Plugins 1.0.0: a folder with plugin.json, skills/ and mcp.json
   agento a2a                 run as an A2A agent over HTTP, for agents that speak Agent2Agent 1.0
                              --port <n> (default 41241)  --host <addr> (default 127.0.0.1)  --public-url <url>
                              A2A_TOKEN in the environment makes callers send it as a Bearer token
@@ -97,11 +110,12 @@ const HELP = `agento — the agent core in a terminal
   -v, --verbose              same as --style verbose
       --no-mcp --no-skills --no-shell --no-web    leave a kind of tool out
       --skills <dir>         one more folder of skills (repeatable), looked in before .claude/skills and .agents/skills
+      --plugin <dir>         load an Agent Plugin from a folder without installing it (repeatable)
       --web-local            let web_fetch reach localhost and private networks (off by default)
 
 In the chat:  /model            pick from the list (↑↓, type to filter; then save as default)
               /model <id>       switch for this session     /default [id]  save as the default
-              /models [filter]  /guidance [level]  /budget [usd]  /cost  /tools  /mcp  /skills
+              /models [filter]  /guidance [level]  /budget [usd]  /cost  /tools  /mcp  /skills  /plugins
               /style [minimal|normal|verbose]  (saved as default)   /strategy  what training learned
               /auto  /log  /clear  /help  /exit                               Ctrl+C stops a turn`;
 
@@ -138,11 +152,18 @@ async function listModels(filter: string | undefined, all: boolean, write: (s: s
 
 const [sub, subArg] = positionals;
 const skillDirs = (flags.skills ?? []).map(d => resolve(d));
+const pluginDirs = (flags.plugin ?? []).map(d => resolve(d));
+// `agento mcp|skill|plugin list|add|remove`: manage what the agent is given, then exit. (`agento mcp` alone serves.)
+if (sub === 'skill' || sub === 'plugin' || (sub === 'mcp' && subArg && ['list', 'add', 'remove'].includes(subArg))) {
+  const { manage } = await import('./manage.ts');
+  process.exit(await manage(sub, subArg, positionals.slice(2), { ...flags, plugin: pluginDirs }, s => process.stdout.write(s), s => process.stderr.write(s)));
+}
 if (sub === 'models' || flags.models) {
   await listModels(sub === 'models' ? subArg : sub, !!flags.all, s => process.stdout.write(s));
   process.exit(0);
 }
 if (sub && sub !== 'model' && sub !== 'train' && sub !== 'acp' && sub !== 'mcp' && sub !== 'a2a') {
+  if (sub === 'skills' || sub === 'plugins') console.error(`did you mean "agento ${sub.slice(0, -1)} list"?`);
   console.error(`unknown command "${sub}" — agento --help`);
   process.exit(2);
 }
@@ -276,6 +297,7 @@ if (sub === 'acp') {
     web: !flags['no-web'],
     webLocal: !!flags['web-local'],
     skills: flags['no-skills'] ? false : skillDirs,
+    plugins: pluginDirs,
   });
   process.exit(0);
 }
@@ -299,6 +321,7 @@ if (sub === 'mcp') {
     web: !flags['no-web'],
     webLocal: !!flags['web-local'],
     skills: flags['no-skills'] ? false : skillDirs,
+    plugins: pluginDirs,
     cwd: resolve(flags.cwd ?? process.cwd()),
   });
   process.exit(0);
@@ -322,7 +345,7 @@ if (sub === 'a2a') {
     token,
     store: kept ? fileStore(kept) : undefined,
     // The card lists the skills this agent has, so a caller can tell what it is good at.
-    card: { skills: await cardSkills(flags['no-skills'] ? undefined : cliSkills(resolve(flags.cwd ?? process.cwd()), skillDirs)) },
+    card: { skills: await cardSkills(flags['no-skills'] ? undefined : cliSkills(resolve(flags.cwd ?? process.cwd()), skillDirs, pluginDirs)) },
     streaming: !flags['no-streaming'],
     log: s => void process.stderr.write(s),
     executor: agentoExecutor({
@@ -338,6 +361,7 @@ if (sub === 'a2a') {
       web: !flags['no-web'],
       webLocal: !!flags['web-local'],
       skills: flags['no-skills'] ? false : skillDirs,
+      plugins: pluginDirs,
       cwd: resolve(flags.cwd ?? process.cwd()),
     }),
   });
@@ -384,12 +408,19 @@ const print = printer(out, { stream: true, style });
 
 // ── tools ──
 const toolsets: Toolset[] = standardToolsets({ root, shell: !flags['no-shell'], web: !flags['no-web'], webOptions: { allowPrivate: !!flags['web-local'] } });
+// "Install this plugin": the agent can do what `agento plugin | skill | mcp add` does, each time with the person's approval.
+toolsets.push((await import('./manage.ts')).extendToolset(root, { skills: skillDirs, plugin: pluginDirs }));
 let mcp: McpConnection[] = [];
+// Agent Plugins: installed ones, and any folder named with --plugin. What was skipped is said once.
+const extensions = plugins(pluginDirs);
+for (const r of extensions.rejected) out(c.yellow(`plugin ${r.dir}: not loaded: ${r.error}\n`));
+for (const p of extensions.loaded) for (const problem of p.problems) out(c.yellow(`plugin ${p.name}: ${problem}\n`));
 if (!flags['no-mcp']) {
-  mcp = await connectAll(root, text => out(c.yellow(`${text}\n`)));
+  // Servers from `.mcp.json` and ~/.agento/mcp.json, and the ones plugins bring (named plugin:server).
+  mcp = await connectSpecs({ ...pluginServers(extensions.loaded), ...mcpConfig(root) }, text => out(c.yellow(`${text}\n`)));
   for (const m of mcp) if (m.toolset) toolsets.push(m.toolset);
 }
-const skills = flags['no-skills'] ? undefined : cliSkills(root, skillDirs);
+const skills = flags['no-skills'] ? undefined : cliSkills(root, skillDirs, pluginDirs);
 
 // ── approvals ──
 const ask = async (req: { tool: string; summary: string }): Promise<Answer> => {
@@ -508,10 +539,14 @@ async function command(line: string): Promise<boolean> {
       break;
     case 'skills': {
       const list = skills ? await skills.list() : [];
-      if (!list.length) out('no skills (.claude/skills here or in ~)\n');
+      if (!list.length) out('no skills (add one: agento skill add <folder or git URL>)\n');
       for (const s of list) out(`${c.bold(s.name)} ${c.dim(s.description.slice(0, 100))}\n`);
       break;
     }
+    case 'plugins':
+      if (!extensions.loaded.length) out('no plugins (add one: agento plugin add <folder or git URL>)\n');
+      for (const p of extensions.loaded) out(`${c.bold(p.name)}${p.version ? ` ${p.version}` : ''} ${c.dim(`skills: ${p.skills.join(', ') || 'none'} · MCP: ${Object.keys(p.servers).join(', ') || 'none'}`)}\n`);
+      break;
     case 'auto':
       session.autoApprove = !session.autoApprove;
       out(`auto-approve: ${session.autoApprove ? c.yellow('on — every change and command runs without asking') : 'off'}\n`);

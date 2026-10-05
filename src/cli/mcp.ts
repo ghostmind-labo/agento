@@ -22,7 +22,7 @@ import { home } from './config.ts';
 
 /** The parts of ensemble's McpServerSpec this reads and writes (kept local: ensemble is optional). */
 export type McpServerSpec =
-  | { command: string; args?: string[]; env?: Record<string, string> }
+  | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
   | { url: string; transport?: 'auto' | 'streamable-http' | 'sse' | 'websocket'; headers?: Record<string, string> };
 
 type McpSession = McpLike & { close(): void };

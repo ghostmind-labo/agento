@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 import {
   defaultPrompts,
   dirSkills,
+  mergeSkills,
   eventLog,
   fileProfiles,
   runAgent,
@@ -23,16 +24,23 @@ import {
   type SkillSource,
   type Toolset,
 } from '../index.ts';
+import { home } from './config.ts';
+import { plugins, pluginSkills } from './plugins.ts';
 
 export type Answer = 'yes' | 'no' | 'always';
 
 /**
  * Where every way of running agento looks for skills, first match wins: the folders named with
- * `--skills`, then `.claude/skills` and `.agents/skills` in the working folder, then the same two in
- * the home. (`.claude/skills` is Claude Code's layout, `.agents/skills` the one Codex and opencode read.)
+ * `--skills`, then `.claude/skills` and `.agents/skills` in the working folder, then agento's own
+ * (`agento skill add`), then the same two in the home, then the skills that plugins bring.
+ * (`.claude/skills` is Claude Code's layout, `.agents/skills` the one Codex and opencode read.)
  */
-export const cliSkills = (root: string, extra: string[] = []): SkillSource =>
-  dirSkills(...extra, join(root, '.claude', 'skills'), join(root, '.agents', 'skills'), join(homedir(), '.claude', 'skills'), join(homedir(), '.agents', 'skills'));
+export function cliSkills(root: string, extra: string[] = [], pluginDirs: string[] = []): SkillSource {
+  const folders = dirSkills(...extra, join(root, '.claude', 'skills'), join(root, '.agents', 'skills'), join(home(), 'skills'), join(homedir(), '.claude', 'skills'), join(homedir(), '.agents', 'skills'));
+  // Read again each time: a skill or a plugin installed while a session is open is there on the next turn.
+  const now = () => mergeSkills(folders, ...plugins(pluginDirs).loaded.map(pluginSkills));
+  return { list: () => now().list(), open: name => now().open(name), readFile: (name, path) => now().readFile(name, path) };
+}
 
 export interface SessionOptions {
   provider: ModelProvider;
